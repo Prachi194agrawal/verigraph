@@ -1,0 +1,8 @@
+Features of the repository:
+$features
+
+For each function below, choose the features (0 to 2) it directly implements, each with a confidence between 0 and 1.
+Only use feature names from the list above.
+Return JSON that maps each function id to its list, for example {"f1": [{"feature": "retry logic", "confidence": 0.8}], "f2": []}
+
+$functions

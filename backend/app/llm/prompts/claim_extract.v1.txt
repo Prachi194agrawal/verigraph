@@ -1,0 +1,13 @@
+Extract the factual claims about code relationships from the explanation below.
+Use only these relations:
+- calls (a function calls another function)
+- not_calls (the text says a function does NOT call another)
+- inherits (a class inherits from another class)
+- defined_in (a function or class is defined in a file)
+- tests (a test exercises a function)
+- modified_by (a function was changed by a person)
+Write each subject and object exactly as it appears in the text. Skip opinions, hedges and other relations.
+Return JSON: {"claims": [{"subject": "...", "relation": "calls", "object": "..."}]}
+
+Explanation:
+$text

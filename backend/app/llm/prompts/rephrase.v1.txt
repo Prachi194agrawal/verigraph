@@ -1,0 +1,7 @@
+Rewrite this question so it sounds like a developer asking a teammate. Keep its meaning exactly.
+Keep every piece of text inside backticks exactly as written, including the backticks.
+Keep any instructions about the answer format. Do not add hints or answers.
+Return JSON: {"question": "..."}
+
+Question:
+$question

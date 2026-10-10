@@ -1,0 +1,10 @@
+# Floors for the offline smoke gate (see gate.smoke.yaml). Metric names are leaderboard keys;
+# use dots for nested ones (f1_by_family.callers). "*" applies to every pipeline.
+"*":
+  errors: {max: 0}
+graphrag:
+  f1_by_family.callers: {min: 0.9}
+  context_recall: {min: 0.8}
+vector:
+  context_recall: {min: 0.2}
+max_regression: 0.02   # allowed F1 drop vs baseline.smoke.json, per model|pipeline

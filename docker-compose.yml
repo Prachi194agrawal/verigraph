@@ -1,0 +1,248 @@
+# VeriGraph for Code: one-command start.
+#
+#   docker compose up -d                        neo4j, postgres, redis, api, worker, web
+#   docker compose --profile tracing up -d      + self-hosted Langfuse v3 (http://localhost:3001)
+#   docker compose --profile ollama up -d       + local Ollama for open models
+#
+# API keys for model providers (GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, ...) go in ./.env.
+name: verigraph
+
+x-backend-env: &backend-env
+  DATA_DIR: /data
+  DATABASE_URL: postgresql+psycopg://verigraph:verigraph@postgres:5432/verigraph
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-verigraph-password}
+  JOB_BACKEND: celery
+  # Local-path repos must live here (mount extra folders read-only under /repos); Git URLs are always allowed.
+  LOCAL_REPO_ROOTS: ${LOCAL_REPO_ROOTS:-/fixtures,/repos}
+  REDIS_URL: redis://redis:6379/0
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  OLLAMA_API_BASE: ${OLLAMA_API_BASE:-http://ollama:11434}
+  LANGFUSE_HOST: http://langfuse-web:3000
+  HF_HOME: /data/huggingface
+
+x-backend-depends: &backend-depends
+  neo4j:
+    condition: service_healthy
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-verigraph-password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+    ports:
+      - "7474:7474"   # Neo4j Browser
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: verigraph
+      POSTGRES_PASSWORD: verigraph
+      POSTGRES_DB: verigraph
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-langfuse.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verigraph -d verigraph"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    image: verigraph-backend:latest
+    build:
+      context: ./backend
+      args:
+        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-true}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - app_data:/data
+      - ./backend/tests/fixtures/mini_repo:/fixtures/mini_repo:ro
+    depends_on: *backend-depends
+
+  worker:
+    image: verigraph-backend:latest
+    build:
+      context: ./backend
+      args:
+        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-true}
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    volumes:
+      - app_data:/data
+      - ./backend/tests/fixtures/mini_repo:/fixtures/mini_repo:ro
+    depends_on: *backend-depends
+
+  web:
+    restart: unless-stopped
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  # ---- optional: self-hosted Langfuse v3 (docker compose --profile tracing up -d) --------------------
+  langfuse-web:
+    image: langfuse/langfuse:3
+    profiles: ["tracing"]
+    depends_on: &langfuse-depends
+      postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://verigraph:verigraph@postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:-verigraph-local-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-verigraph-local-nextauth}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: langfuse-redis-secret
+      # Headless init: creates the project with the keys the backend uses (see .env.example).
+      LANGFUSE_INIT_ORG_ID: verigraph
+      LANGFUSE_INIT_ORG_NAME: VeriGraph
+      LANGFUSE_INIT_PROJECT_ID: verigraph-code
+      LANGFUSE_INIT_PROJECT_NAME: verigraph-code
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-verigraph-local}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-verigraph-local}
+      LANGFUSE_INIT_USER_EMAIL: admin@verigraph.local
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: verigraph-admin
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    profiles: ["tracing"]
+    depends_on: *langfuse-depends
+    environment: *langfuse-env
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    profiles: ["tracing"]
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  langfuse-minio:
+    image: minio/minio
+    profiles: ["tracing"]
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  langfuse-redis:
+    image: redis:7-alpine
+    profiles: ["tracing"]
+    command: ["redis-server", "--requirepass", "langfuse-redis-secret"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "langfuse-redis-secret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # ---- optional: local open models (docker compose --profile ollama up -d) --------------------------
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  neo4j_data:
+  postgres_data:
+  app_data:
+  clickhouse_data:
+  clickhouse_logs:
+  minio_data:
+  ollama_data:

@@ -1,0 +1,14 @@
+.env
+backend/.venv/
+backend/data/
+backend/*.egg-info/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+frontend/node_modules/
+frontend/.next/
+frontend/public/monaco/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+evals/results/
+*.csv

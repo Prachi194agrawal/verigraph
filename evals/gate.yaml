@@ -1,0 +1,19 @@
+# Real eval gate: a frozen 50-question slice of psf/requests v2.32.3 answered by a real model.
+# CI runs it on pull requests that touch prompts, pipelines or evals (needs the GROQ_API_KEY secret).
+# The graph is rebuilt at the pinned commit with the same options the slice was generated with.
+name: requests-gate
+repo: https://github.com/psf/requests
+commit: 0e322af87745eff34caffe4df68456ebc20d9068  # tag v2.32.3
+dataset: datasets/requests-v2.32.3-gate.jsonl
+build:
+  resolvers: [jedi, import, name]
+  history: true
+  github: false
+  max_commits: 1000
+  embeddings: true
+  embedding_model: hash
+models: [groq/llama-3.1-8b-instant]
+pipelines: [none, vector, graphrag, cypher_agent]
+concurrency: 4
+thresholds: thresholds.yaml
+baseline: baseline.json

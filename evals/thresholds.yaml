@@ -1,0 +1,14 @@
+# Floors and ceilings for the real gate (see gate.yaml), checked per model x pipeline row.
+# These start loose. After the first run on main, record a baseline with
+#   verigraph gate --config ../evals/gate.yaml --update-baseline
+# and commit evals/baseline.json; from then on F1 may not drop more than max_regression below it.
+"*":
+  errors: {max: 5}
+graphrag:
+  f1: {min: 0.30}
+  context_recall: {min: 0.80}
+cypher_agent:
+  f1: {min: 0.25}
+vector:
+  f1: {min: 0.10}
+max_regression: 0.05

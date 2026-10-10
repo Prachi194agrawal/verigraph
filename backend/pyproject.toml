@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verigraph-code"
+version = "0.1.0"
+description = "Turn a repository into a code knowledge graph, then use the graph to test and grade LLMs on that codebase."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "neo4j>=5.15",
+  "tree-sitter>=0.23",
+  "tree-sitter-python>=0.23",
+  "jedi>=0.19",
+  "gitpython>=3.1",
+  "pydriller>=2.6",
+  "pygithub>=2.1",
+  "litellm>=1.40",
+  "typer>=0.12",
+  "pyyaml>=6.0",
+  "numpy>=1.26",
+  "httpx>=0.27",
+  "celery[redis]>=5.3",
+  "redis>=5.0",
+]
+
+[project.optional-dependencies]
+# Code embeddings with Nomic CodeRankEmbed / Jina code models (pulls in torch). CodeRankEmbed's remote
+# modeling code calls an API that transformers 5 removed, hence the <5 pin (and sentence-transformers <6).
+embeddings = ["sentence-transformers>=3.0,<6", "transformers>=4.44,<5", "einops>=0.7"]
+# LiteLLM's "langfuse" callback and our score logging use the v2 SDK API.
+tracing = ["langfuse>=2.50,<3"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+verigraph = "app.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.llm.prompts" = ["*.txt"]
+"app.graph" = ["*.cypher"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures", ".*"]
+markers = ["neo4j: needs a running Neo4j (NEO4J_URI); skipped when unreachable"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "B008"]

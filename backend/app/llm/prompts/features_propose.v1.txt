@@ -1,0 +1,7 @@
+Below is an overview of the Python repository "$repo": a README excerpt, then its modules with sample function summaries.
+
+List 6 to 12 features this codebase implements, such as "authentication", "retry logic" or "cookie handling".
+Use short lowercase names.
+Return JSON: {"features": [{"name": "...", "description": "one sentence"}]}
+
+$overview

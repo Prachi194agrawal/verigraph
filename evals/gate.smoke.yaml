@@ -1,0 +1,17 @@
+# Offline smoke gate: the fixture repo + the extractive mock model. No API keys, about a minute.
+# mock/extractive can only copy edges that the pipeline put in its context, so this gate catches
+# retrieval regressions (e.g. GraphRAG no longer expanding callers) on every push.
+name: mini-smoke
+repo: ../backend/tests/fixtures/mini_repo
+repo_is_path: true
+dataset: datasets/mini-smoke.jsonl
+build:
+  resolvers: [jedi, import, name]
+  history: false
+  github: false
+  embeddings: true
+  embedding_model: hash
+models: [mock/extractive]
+pipelines: [none, vector, graphrag, cypher_agent]
+thresholds: thresholds.smoke.yaml
+baseline: baseline.smoke.json

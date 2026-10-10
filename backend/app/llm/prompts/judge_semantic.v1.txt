@@ -1,0 +1,8 @@
+Here is a Python function from the repository "$repo", followed by a $claim_kind that an LLM wrote about it.
+Is the $claim_kind faithful to the code: accurate, and not describing behavior the code does not have?
+Return JSON: {"label": "faithful" or "unfaithful", "reason": "one sentence"}
+
+Function:
+$code
+
+$claim_kind: $claim

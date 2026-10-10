@@ -1,0 +1,6 @@
+{
+  "mock/extractive|cypher_agent": 0.1891891891891892,
+  "mock/extractive|graphrag": 0.3660231660231661,
+  "mock/extractive|none": 0.1891891891891892,
+  "mock/extractive|vector": 0.1891891891891892
+}

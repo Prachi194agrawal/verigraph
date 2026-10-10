@@ -1,0 +1,4 @@
+Summarize each Python function below in ONE line of at most 25 words. Say what it does, not how.
+Return a JSON object that maps each function id to its summary, for example {"f1": "...", "f2": "..."}.
+
+$functions

@@ -1,0 +1,9 @@
+You check whether an answer's explanation is supported by the context that was retrieved for it.
+Split the explanation into short atomic statements. For each one, decide whether the context supports it.
+Return JSON: {"statements": [{"text": "...", "supported": true}]}
+
+Context:
+$context
+
+Explanation:
+$explanation

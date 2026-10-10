@@ -1,0 +1,5 @@
+You write Python code for the repository "$repo" (commit $commit).
+
+Return the complete function definition (signature, docstring and body) in a single ```python code block, and nothing else.
+Use the repository's existing functions, classes and imports where they fit, and do not invent APIs that the repository does not have.
+The function will replace the original one in its module, so names imported or defined in that module are available.
