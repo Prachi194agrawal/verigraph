@@ -5,12 +5,12 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.eval.report import answer_rows, summarize
-from app.models import Dataset, Experiment, GraphBuild
+from app.models import Answer, Dataset, Experiment, GraphBuild
 from app.pipelines import PIPELINES
 from app.schemas import ExperimentCreate, ExperimentOut
 from app.workers.dispatch import enqueue
@@ -67,12 +67,16 @@ def get_experiment(experiment_id: int, db: Session = Depends(get_db)) -> Experim
 
 @router.post("/{experiment_id}/resume", response_model=ExperimentOut, status_code=202)
 def resume_experiment(experiment_id: int, background: BackgroundTasks, db: Session = Depends(get_db)) -> Experiment:
-    """Re-enqueue a failed or interrupted experiment; questions that already have an answer are skipped."""
+    """Re-enqueue a failed experiment, or a finished one with failed model calls: answered questions are kept and
+    failed calls (rate limits, timeouts) are asked again."""
     exp = db.get(Experiment, experiment_id)
     if exp is None:
         raise HTTPException(404, "experiment not found")
-    if exp.status != "failed":
-        raise HTTPException(409, "only failed experiments can be resumed; an active job may still be running")
+    failed_calls = db.scalar(select(func.count()).select_from(Answer).where(
+        Answer.experiment_id == experiment_id, Answer.error.is_not(None)))
+    if exp.status != "failed" and not (exp.status == "done" and failed_calls):
+        raise HTTPException(409, "only failed experiments, or finished ones with failed model calls, can be resumed; "
+                                 "an active job may still be running")
     exp.status, exp.error = "queued", None
     db.commit()
     enqueue("experiment", exp.id, background)

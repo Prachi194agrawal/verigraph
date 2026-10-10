@@ -73,6 +73,7 @@ and optional judging. A judge from another provider needs that provider's key to
 | Gemini | `GEMINI_API_KEY` | [Google API-key guide](https://ai.google.dev/gemini-api/docs/api-key); model names start with `gemini/` |
 | OpenAI | `OPENAI_API_KEY` | your OpenAI API project key; model names use the LiteLLM OpenAI provider |
 | Anthropic | `ANTHROPIC_API_KEY` | your Anthropic API key; model names start with `anthropic/` |
+| OpenRouter | `OPENROUTER_API_KEY` | [OpenRouter keys](https://openrouter.ai/keys); model names start with `openrouter/`, and those ending in `:free` cost nothing |
 | GitHub issues and PR enrichment | `GITHUB_TOKEN` (optional for public repos) | increases API allowance; it is separate from model access |
 | Tracing | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` (optional) | keys from your Langfuse project; JSONL tracing already works without them |
 | Embeddings | none for `hash` or the default public CodeRankEmbed model | neural embeddings download model weights |

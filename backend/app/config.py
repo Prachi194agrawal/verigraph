@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     llm_cache: bool = True
     llm_timeout_s: float = 120.0
     llm_num_retries: int = 2
+    # Free tiers allow few requests and tokens per minute. Concurrent calls per provider (the model-name prefix,
+    # "groq" for "groq/..."), per process, as "provider=n,..."; unlisted providers are not limited.
+    llm_provider_concurrency: str = "groq=2,gemini=2,openrouter=2"
+    llm_rate_limit_retries: int = 6  # further attempts after an HTTP 429, waiting as the provider asks
+    llm_rate_limit_max_wait_s: float = 60.0
 
     # Tracing (Langfuse is used when both keys are set; JSONL traces are always written)
     langfuse_public_key: str | None = None
@@ -79,6 +84,15 @@ class Settings(BaseSettings):
         if unknown:
             raise ValueError(f"Unknown resolvers {sorted(unknown)}; choose from {ALL_RESOLVERS}")
         return order
+
+    @property
+    def provider_concurrency(self) -> dict[str, int]:
+        limits = {}
+        for item in self.llm_provider_concurrency.split(","):
+            if item.strip():
+                provider, _, n = item.partition("=")
+                limits[provider.strip()] = max(1, int(n))
+        return limits
 
     @property
     def local_roots(self) -> list[Path]:

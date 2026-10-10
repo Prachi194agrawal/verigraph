@@ -57,8 +57,8 @@ Requests reject empty repository/model names, unknown or empty resolver lists, n
 empty model/pipeline lists, and concurrency outside 1–32. Model/pipeline duplicates are removed before
 creating work. The vector pipeline is rejected before enqueueing when its graph has no embeddings.
 Human claim labels must reference a verdict belonging to that same answer, preserving agreement data.
-Only failed experiments can be resumed through the HTTP API; queued/running jobs may still have an
-active worker and must not be duplicated. A worker interrupted without recording failure requires
+Only failed experiments, or finished ones with failed model calls, can be resumed through the HTTP API;
+queued/running jobs may still have an active worker and must not be duplicated. A worker interrupted without recording failure requires
 operator investigation before recovery. The CLI resume command should likewise only be used after
 confirming no worker is still processing that experiment.
 
@@ -261,6 +261,10 @@ How it works:
   detached HEAD. A pin can be a SHA, a tag (`v2.32.3`) or a branch. The resolved 40-character SHA is
   stored, so "the graph is pinned to one commit" holds even when you pinned a branch. A commit that only
   a PR ref can reach is fetched by SHA.
+- **Builds of the same repository take turns** on its mirror (a file lock next to it), so a second build
+  never updates a mirror that the first is still writing. A failed clone or update is retried twice, over
+  HTTP/1.1, because GitHub can reset an HTTP/2 stream during a long transfer (`curl 92 ... early EOF`).
+  The mirror includes every PR ref, so a popular repository downloads much more than its default branch.
 - A **local git repo** is cloned too, so your working tree is never touched.
 - A **plain folder** is copied and has no history.
 - **Local paths** (folders, local repos, `file://` URLs) are accepted by the API only inside
@@ -541,7 +545,10 @@ onto function ranges at that commit ([testgen/swebench.py](backend/app/testgen/s
 **The run loop.** Worker threads (`concurrency`, default 4) each take a question, call
 `pipeline.answer(question, model)` and then `scorer.score(...)`, and hand the result back. **Only the main
 thread writes to the database**, which keeps SQLite safe and Postgres sessions simple. A re-run skips
-questions that already have an answer, so an interrupted experiment resumes. A pipeline never sees the
+questions that already have an answer, so an interrupted experiment resumes. An answer whose model call
+failed (rate limit, timeout, provider outage) is stored with its `error` and scored 0, but it is not
+a wrong answer: a re-run deletes it and asks the question again. `verigraph run` and the demo script do
+this automatically, and the dashboard offers **Retry failed calls**. A pipeline never sees the
 gold answer: it receives a `QuestionInput` with only id, family, text and meta.
 
 **The answer contract** ([prompts/answer_system.v1.txt](backend/app/llm/prompts/answer_system.v1.txt)).
@@ -562,7 +569,7 @@ and falls back to the whole text as the explanation.
 | `none` | the question only. Anything right here came from memory (E3) | [no_retrieval.py](backend/app/pipelines/no_retrieval.py) |
 | `vector` | the k = 8 nearest functions by vector search over `code_embedding`, as code chunks of up to 60 lines. The index is shared by all builds, so it is over-fetched (250, then 5,000 neighbours) and filtered to the build; if other builds still crowd this one out, an exact cosine scan of the build's functions takes over (`vector.similarity.cosine`, or numpy on Neo4j < 5.18) | [vector.py](backend/app/pipelines/vector.py), [store.py](backend/app/graph/store.py) `vector_search` |
 | `graphrag` | seeds = symbols named in the question (backticks and dotted identifiers resolved through the BuildIndex; up to 3 matches for ambiguous names), plus 3 vector seeds when none are found or for localization. Each seed expands to its defining file, callers up to `graphrag_hops` (default **2**), callees (1 hop), class and sibling methods, inheritance in both directions, and the last 3 commits with author and PR. The subgraph is rendered as explicit edge lines `a -CALLS-> b [jedi, line 202]`, deduplicated and capped at 120 edges, plus the seed's code | [graphrag.py](backend/app/pipelines/graphrag.py) |
-| `cypher_agent` | the graph schema and a JSON protocol: each turn is either `{"action":"query","cypher":...}` (rows come back, up to 30 shown) or `{"action":"answer",...}`. At most 4 queries | [cypher_agent.py](backend/app/pipelines/cypher_agent.py) |
+| `cypher_agent` | the graph schema and a JSON protocol: each turn is either `{"action":"query","cypher":...}` (rows come back, up to 30 shown) or `{"action":"answer",...}`. At most 4 queries. An agent that never answers is scored as an empty answer, not as a failed call | [cypher_agent.py](backend/app/pipelines/cypher_agent.py) |
 
 **Fairness rules for code tasks.** The function being rewritten is "blanked":
 
@@ -585,6 +592,12 @@ it can fix its Cypher.
 - **Cache**: responses at temperature 0 are **cached on disk** (`llm_cache.sqlite`), keyed by model,
   messages and parameters. The cache stores the original latency and cost, so a cached rerun reports the
   same numbers and costs nothing.
+- **Rate limits**: free tiers allow few requests and tokens per minute. Concurrent calls are capped per
+  provider (`LLM_PROVIDER_CONCURRENCY`, default `groq=2,gemini=2,openrouter=2`, per process), and an HTTP 429
+  is retried up to `LLM_RATE_LIMIT_RETRIES` times after the wait the provider asks for (its Retry-After, or
+  "try again in 7.6s" in the message), else exponential backoff. A wait longer than
+  `LLM_RATE_LIMIT_MAX_WAIT_S` (such as a used-up daily quota) fails the call at once instead. Reported
+  latency is that of the successful attempt, without the waiting.
 - **Mock models**: `mock/extractive` copies the sources of `a -CALLS-> b` lines whose target is named in
   the question (it knows only what retrieval showed it), and `mock/empty` always answers `[]`. They make
   every test and the CI smoke gate run offline.
@@ -716,10 +729,13 @@ The result is `test_runs` and `test_pass_rate`. Generated code never runs outsid
   quantity. They used to share the curve and lifted its 1-hop point, so they now get their own
   `f1_by_inheritance_depth`;
 - context recall, claim metrics, false-premise rejection and hit@k;
-- codegen metrics, cost per question, latency (mean and median), and tokens.
+- codegen metrics, cost per question, latency (mean and median), and tokens;
+- `errors` (failed model calls) and `f1_answered`, the mean F1 without them. `f1` counts a failed call as 0,
+  so every row is over the same questions; the two together show a model's quality on a run that was
+  rate-limited.
 
 `leaderboard` lists every experiment on a dataset, and `compare` gives a **paired bootstrap** difference
-between two experiments on the same questions.
+between two experiments on the same questions, leaving out questions where either side's call failed.
 
 ### Step 7: Explore
 
@@ -732,7 +748,7 @@ The dashboard ([frontend/](frontend/)) is a Next.js app that calls the API from 
 | `/builds/[id]` | stat tiles (including the symbol-checker false-positive rate); how call sites were resolved (precise, name, unresolved, external); edge-audit precision; dataset generator; **call-graph explorer**: symbol search, Cytoscape neighborhood (1-3 hops, focus at the centre, tests on the outer ring, dashed = name guess) next to Monaco with the function highlighted; `?symbol=` deep links; **Ask the graph** and **Change impact** panels ([4b](#4b-using-the-graph-directly-ask-and-change-impact)); **Delete build** | `/builds/{id}`, `/quality`, `/symbols`, `/neighborhood`, `/node`, `/file`, `POST /ask`, `POST /impact`, `DELETE /builds/{id}` |
 | `/datasets/[id]` | experiment launcher (models, pipelines, judge, limit, concurrency, prompt version, GraphRAG hops, vector top-k, a family subset, sandbox tests); experiments with status; questions with gold answers and gold Cypher | `/datasets/{id}`, `/questions`, `POST /experiments` |
 | `/datasets/[id]/leaderboard` | a model filter above two charts: **F1 by family** (E1, grouped bars) and **F1 by hop depth on impact questions** (E2, one line per pipeline); the full table (CI, per family, per hop, context recall, claim precision, contradictions, premise rejection, hit@5, code hallucination, cost, latency); **compare two experiments** (paired bootstrap: difference, 95 % CI, p, and whether the CI excludes 0); **checker agreement** (Cohen's kappa per checker, E6) | `/leaderboard`, `/leaderboard/hops`, `/compare`, `/datasets/{id}/agreement` |
-| `/experiments/[id]` | summary tiles and per-question scores; a **Resume** button on a failed experiment | `/experiments/{id}/results`, `POST /experiments/{id}/resume` |
+| `/experiments/[id]` | summary tiles and per-question scores; a **Resume** button on a failed experiment, and **Retry failed calls** on a finished one with failed model calls | `/experiments/{id}/results`, `POST /experiments/{id}/resume` |
 | `/answers/[id]` | question and gold; answer items as ✓ correct / ✕ wrong / ✕ not in the repo / ○ missed; explanation; **claim table with verdicts and evidence edges, each name linking into the graph explorer**; for code, Monaco with markers on lines that have symbol problems; agent queries; scores; human-label buttons | `/answers/{id}/checks`, `POST /answers/{id}/labels` |
 
 The code views use Monaco **served by the dashboard itself**: `npm run dev`/`build` copy `monaco-editor`'s
@@ -956,7 +972,7 @@ built by the same version.
 | GET | `/datasets`, `/datasets/{id}`, `/datasets/{id}/questions?family=`, `/datasets/{id}/export` (JSONL) | |
 | POST | `/experiments` | run models × pipelines on a dataset |
 | GET | `/experiments?dataset_id=`, `/experiments/{id}`, `/experiments/{id}/results` | summary and per-question scores |
-| POST | `/experiments/{id}/resume` | re-enqueue a failed experiment (answered questions are skipped) |
+| POST | `/experiments/{id}/resume` | re-enqueue a failed experiment, or a finished one with failed model calls (answered questions are skipped, failed calls asked again) |
 | GET | `/leaderboard?dataset_id=`, `/leaderboard/hops?dataset_id=`, `/compare?a=&b=&metric=` | |
 | GET | `/answers/{id}/checks` | claim verdicts, symbol checks, test runs, scores, labels |
 | POST | `/answers/{id}/labels` | a human label for the answer or for one claim |
@@ -972,7 +988,7 @@ Interactive docs are at `http://localhost:8000/docs`.
 | `testgen BUILD [--families] [--per-family] [--seed] [--rephrase-model] [--version]` | step 4 |
 | `freeze DATASET out.jsonl [--n 50]`, `load-dataset BUILD file.jsonl`, `verify DATASET` | frozen slices |
 | `run DATASET --models ... [--pipelines] [--judge-model] [--limit] [--families] [--concurrency] [--run-tests] [--top-k] [--graphrag-hops]` | steps 5-6, then prints the leaderboard |
-| `resume EXPERIMENT` | finish a failed or interrupted experiment |
+| `resume EXPERIMENT` | finish a failed or interrupted experiment, or re-ask its failed model calls |
 | `report DATASET [--json]`, `compare A B [--metric]` | results |
 | `audit-edges`, `audit-score`, `audit-semantic` | trust checks |
 | `swebench BUILD instances.jsonl` | SWE-bench localization questions |
@@ -999,6 +1015,7 @@ All settings are environment variables (or `.env`; see [.env.example](.env.examp
 | `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_MAX_TOKENS` | `nomic-ai/CodeRankEmbed`, 768, 512 | `hash` needs no ML dependencies; raise the token cap on a GPU |
 | `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_API_BASE` | | read by LiteLLM |
 | `LLM_CACHE`, `LLM_TIMEOUT_S`, `LLM_NUM_RETRIES` | true, 120, 2 | |
+| `LLM_PROVIDER_CONCURRENCY`, `LLM_RATE_LIMIT_RETRIES`, `LLM_RATE_LIMIT_MAX_WAIT_S` | `groq=2,gemini=2,openrouter=2`, 6, 60 | concurrent calls per provider (per process); waits after an HTTP 429 |
 | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | | enable Langfuse |
 | `SANDBOX_IMAGE_PREFIX`, `SANDBOX_TIMEOUT_S` | `verigraph-sandbox`, 600 | |
 
@@ -1182,5 +1199,3 @@ In priority order: what turns the platform into findings first, then what extend
    across two releases of the same repository (a stretch goal of the plan).
 9. **More languages** through `scip-typescript` / `scip-go` and a Tree-sitter front end that emits the same
    `CodeGraph`.
-10. **Provider-aware rate limiting.** Per-provider concurrency and retry budgets, so free-tier keys (Groq,
-    Gemini) do not turn rate-limit errors into answer errors.

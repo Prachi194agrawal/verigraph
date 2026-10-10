@@ -68,6 +68,7 @@ export default function LeaderboardPage() {
                 <th className="num">premise rejected</th><th className="num">hit@5</th>
                 <th className="num">code halluc.</th><th className="num">missing sym.</th>
                 <th className="num">$/q</th><th className="num">ms/q</th><th className="num">n</th>
+                <th className="num">failed calls</th>
               </tr>
             </thead>
             <tbody>
@@ -89,6 +90,8 @@ export default function LeaderboardPage() {
                   <td className="num">{r.cost_per_question === null ? "–" : `$${r.cost_per_question.toFixed(4)}`}</td>
                   <td className="num">{r.latency_ms_mean === null ? "–" : Math.round(r.latency_ms_mean)}</td>
                   <td className="num">{r.n}</td>
+                  <td className="num">{r.errors ? <span title="F1 over the questions that were answered">
+                    {r.errors} <span className="muted">(F1 answered {fmt(r.f1_answered)})</span></span> : 0}</td>
                 </tr>
               ))}
               {rows.length === 0 && <tr><td colSpan={20} className="muted">No experiments on this dataset yet.</td></tr>}

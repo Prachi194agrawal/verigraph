@@ -65,9 +65,11 @@ export interface Experiment {
 
 export interface Summary {
   n: number;
-  errors: number;
+  errors: number; // failed model calls (rate limits, timeouts); scored 0 in f1 until retried
+  error_rate?: number | null;
   f1: number | null;
   f1_ci: [number | null, number | null];
+  f1_answered?: number | null; // f1 without the failed calls
   f1_by_family: Record<string, number | null>;
   n_by_family: Record<string, number>;
   f1_by_hop: Record<string, number | null>; // impact questions only (E2)

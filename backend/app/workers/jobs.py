@@ -19,6 +19,7 @@ from sqlalchemy import delete, select
 
 from app import PARSER_VERSION
 from app.analysis.symbol_audit import symbol_self_audit
+from app.cleanup import delete_answers
 from app.config import get_settings
 from app.db import session_scope
 from app.eval.index import load_build_index
@@ -111,9 +112,13 @@ def run_build(build_id: int) -> None:
         if opts.get("semantic_model"):
             say("step 3: LLM summaries and feature tags")
             llm, model, limit = get_llm(), opts["semantic_model"], opts.get("semantic_limit")
-            stats["summaries"] = summarize_functions(store, graph_id, llm, model, limit=limit, progress=say)
-            stats["features"] = tag_features(store, graph_id, llm, model, name, checkout.path, limit=limit,
-                                             progress=say)
+            try:
+                stats["summaries"] = summarize_functions(store, graph_id, llm, model, limit=limit, progress=say)
+                stats["features"] = tag_features(store, graph_id, llm, model, name, checkout.path, limit=limit,
+                                                 progress=say)
+            except Exception as exc:  # noqa: BLE001 - the optional, never-gold meaning layer must not fail the build
+                log.warning("LLM summaries/features of build %s failed: %s", build_id, exc)
+                stats["semantic_error"] = f"{type(exc).__name__}: {exc}"[:1000]
         if opts.get("embeddings", True):
             say("step 3: code embeddings")
             embedder = get_embedder(opts.get("embedding_model") or settings.embedding_model)
@@ -217,6 +222,9 @@ def _run_experiment(experiment_id: int) -> None:
             questions = questions[: int(opts["limit"])]
         if pipeline_name == "cypher_agent":  # it could read the original function out of the graph
             questions = [q for q in questions if q.family != "codegen"]
+        # An errored answer is a failed call (rate limit, timeout, provider outage), not a wrong answer: drop it so
+        # its question is asked again instead of keeping an F1 of 0.
+        delete_answers(db, select(Answer.id).where(Answer.experiment_id == experiment_id, Answer.error.is_not(None)))
         done = set(db.execute(select(Answer.question_id).where(Answer.experiment_id == experiment_id)).scalars())
         todo = [(q.id, q.family, q.text, dict(q.meta or {}), list(q.gold_answer or []), q.hop_count)
                 for q in questions if q.id not in done]

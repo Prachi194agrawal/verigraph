@@ -59,7 +59,7 @@ def build_quality(build_id: int, db: Session = Depends(get_db)) -> dict:
         "calls_edges_by_resolver": stats.get("calls_edges_by_resolver"), "external_calls": stats.get("external"),
         "counts": stats.get("counts"), "history": stats.get("history"), "github": stats.get("github"),
         "embeddings": stats.get("embeddings"), "summaries": stats.get("summaries"), "features": stats.get("features"),
-        "symbol_audit": stats.get("symbol_audit"),
+        "semantic_error": stats.get("semantic_error"), "symbol_audit": stats.get("symbol_audit"),
         "edge_audit": edge_precision(audits) if audits else {},
         "semantic_audit": {
             "judged": sum(a.judge_label is not None for a in semantic),

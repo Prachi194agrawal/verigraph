@@ -6,7 +6,7 @@ import { type LeaderRow, PIPELINE_LABEL } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 
 interface Comparison { metric: string; a: number; b: number; diff: number | null; lo: number | null; hi: number | null;
-  n: number; p: number | null }
+  n: number; p: number | null; excluded_failed_calls?: number }
 interface Agreement { n: number; kappa: number | null; raw_agreement: number | null }
 
 const label = (r: LeaderRow) => `#${r.experiment_id} ${r.model} × ${PIPELINE_LABEL[r.pipeline] ?? r.pipeline}`;
@@ -56,7 +56,8 @@ export function ComparePanel({ rows }: { rows: LeaderRow[] }) {
           <p>
             mean {metric} difference A − B = <strong>{fmt(result.diff)}</strong>{" "}
             <span className="muted">[95% CI {fmt(result.lo)}, {fmt(result.hi)}] over {result.n} shared questions,
-              p ≈ {fmt(result.p, 3)}</span>
+              p ≈ {fmt(result.p, 3)}
+              {result.excluded_failed_calls ? ` (${result.excluded_failed_calls} left out: a model call failed)` : ""}</span>
             <br />
             <span className="secondary">{significant
               ? "The interval excludes 0: the difference is unlikely to be noise."

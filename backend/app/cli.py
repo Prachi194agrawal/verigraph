@@ -21,7 +21,7 @@ import yaml
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import PARSER_VERSION
 from app.db import init_db, session_scope
@@ -29,12 +29,13 @@ from app.eval.meta_eval import edge_precision, sample_edges
 from app.eval.report import compare, hop_curve, leaderboard
 from app.graph.store import get_store
 from app.ingest.clone import repo_name
-from app.models import Dataset, Experiment, GraphBuild, Question, Repo, SemanticAudit
+from app.models import Answer, Dataset, Experiment, GraphBuild, Question, Repo, SemanticAudit
 from app.testgen.templates import FAMILIES
 from app.workers.jobs import run_build, run_dataset, run_experiment
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="VeriGraph for Code")
 console = Console()
+FAILED_CALL_RETRIES = 2  # extra passes over questions whose model call failed
 
 
 def _csv(value: str | None) -> list[str] | None:
@@ -234,6 +235,14 @@ def _run_experiments(dataset_id: int, models: list[str], pipelines: list[str], p
             e = db.get(Experiment, exp_id)
             console.print(f"running experiment {exp_id}: {e.model} x {e.pipeline}")
         run_experiment(exp_id)
+        for _ in range(FAILED_CALL_RETRIES):  # outlast rate limits longer than the client's own backoff
+            with session_scope() as db:
+                failed = db.scalar(select(func.count()).select_from(Answer).where(
+                    Answer.experiment_id == exp_id, Answer.error.is_not(None)))
+            if not failed:
+                break
+            console.print(f"  {failed} failed model call(s); asking them again")
+            run_experiment(exp_id)
         _check(Experiment, exp_id)
     return ids
 
@@ -253,7 +262,7 @@ def run(dataset_id: int, models: str = typer.Option(..., help="comma-separated L
 
 @app.command()
 def resume(experiment_id: int) -> None:
-    """Finish a failed or interrupted experiment (already answered questions are skipped)."""
+    """Finish a failed or interrupted experiment, or re-ask its failed model calls (answered questions are kept)."""
     _setup()
     with session_scope() as db:
         exp = db.get(Experiment, experiment_id)
@@ -278,15 +287,18 @@ def report(dataset_id: int, as_json: bool = typer.Option(False, "--json")) -> No
         return
     families = sorted({f for row in board for f in (row.get("f1_by_family") or {})})
     table = Table(title=f"Leaderboard - dataset {dataset_id}")
-    for col in ["exp", "model", "pipeline", "F1 [95% CI]", *families, "ctx recall", "contradicted", "$/q", "ms/q"]:
+    for col in ["exp", "model", "pipeline", "F1 [95% CI]", *families, "ctx recall", "contradicted", "$/q", "ms/q",
+                "failed calls"]:
         table.add_column(col)
     for row in board:
         ci = row.get("f1_ci") or [None, None]
         f1 = f"{_fmt(row.get('f1'))} [{_fmt(ci[0])}, {_fmt(ci[1])}]"
+        errors = row.get("errors") or 0
+        failed = f"{errors} (F1 answered {_fmt(row.get('f1_answered'))})" if errors else "0"
         table.add_row(str(row["experiment_id"]), row["model"], row["pipeline"], f1,
                       *[_fmt((row.get("f1_by_family") or {}).get(f)) for f in families],
                       _fmt(row.get("context_recall")), _fmt(row.get("contradicted_claim_rate")),
-                      _fmt(row.get("cost_per_question")), _fmt(row.get("latency_ms_mean")))
+                      _fmt(row.get("cost_per_question")), _fmt(row.get("latency_ms_mean")), failed)
     console.print(table)
     if hops:
         hop_table = Table(title="F1 by hop depth (impact questions, E2)")

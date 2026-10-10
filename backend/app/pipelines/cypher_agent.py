@@ -116,8 +116,9 @@ class CypherAgentPipeline(Pipeline):
                 note = ("You have used all your queries. Reply now with the answer JSON object."
                         if queries >= max_queries else "Reply with exactly one JSON object, as instructed.")
                 messages.append({"role": "user", "content": note})
-            else:
-                out.error = "agent did not produce an answer"
+            else:  # the model's failure, scored as an empty answer; `error` is kept for failed calls, which are retried
+                out.raw_text = resp.text
+                out.explanation = "The agent did not produce an answer within its turn limit."
         except Exception as exc:  # noqa: BLE001
             out.error = f"{type(exc).__name__}: {exc}"[:2000]
         out.context = "\n\n".join(context_parts)

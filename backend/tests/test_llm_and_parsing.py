@@ -1,6 +1,13 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+import pytest
 
 from app.graph.store import is_read_only
+from app.llm import client as client_module
 from app.llm.cache import ResponseCache, cache_key
 from app.llm.client import LLMClient, extract_json
 from app.llm.mock import mock_complete
@@ -59,6 +66,110 @@ def test_client_caches_and_traces(tmp_path):
     assert not first.cached and second.cached and first.text == second.text
     lines = (tmp_path / "traces").glob("*.jsonl")
     assert sum(len(p.read_text().splitlines()) for p in lines) == 2
+
+
+class _RateLimited(Exception):
+    """What LiteLLM raises on an HTTP 429."""
+
+    status_code = 429
+
+    def __init__(self, retry_after: str | None = None, wait: str = "2.5s") -> None:
+        super().__init__(f"Rate limit reached for model. Please try again in {wait}.")
+        self.response = SimpleNamespace(headers={"retry-after": retry_after} if retry_after else {})
+
+
+def _reply(text: str) -> SimpleNamespace:
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+                           usage=SimpleNamespace(prompt_tokens=3, completion_tokens=1))
+
+
+def _fake_litellm(outcomes: list) -> SimpleNamespace:
+    """Stands in for the litellm module: each completion() raises or returns the next outcome."""
+    calls: list[dict] = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _reply(outcome)
+    return SimpleNamespace(completion=completion, completion_cost=lambda **_: 0.0, calls=calls)
+
+
+def test_rate_limited_calls_wait_and_retry(tmp_path):
+    from app.config import Settings
+
+    client = LLMClient(Settings(data_dir=tmp_path, llm_cache=False, llm_rate_limit_retries=2),
+                       Tracer(tmp_path / "traces"))
+    waits: list[float] = []
+    client._sleep = waits.append
+    client._litellm = _fake_litellm([_RateLimited("3"), _RateLimited(), "ok"])
+    assert client.complete("groq/m", [{"role": "user", "content": "a"}]).text == "ok"
+    assert len(client._litellm.calls) == 3
+    assert 3 <= waits[0] <= 4  # the provider's Retry-After header
+    assert 2.5 <= waits[1] <= 3.5  # "try again in 2.5s" in the error message
+
+    client._litellm = _fake_litellm([_RateLimited(), _RateLimited(), _RateLimited(), "never"])
+    with pytest.raises(_RateLimited):  # retries are bounded
+        client.complete("groq/m", [{"role": "user", "content": "b"}])
+    assert len(client._litellm.calls) == 3
+
+    client._litellm = _fake_litellm([ValueError("bad request"), "never"])
+    with pytest.raises(ValueError):  # only rate limits are waited out
+        client.complete("groq/m", [{"role": "user", "content": "c"}])
+    assert len(client._litellm.calls) == 1
+
+    waits.clear()
+    client._litellm = _fake_litellm([_RateLimited(wait="7m30.5s"), "never"])
+    with pytest.raises(_RateLimited):  # a used-up daily quota: waiting a minute would not help
+        client.complete("groq/m", [{"role": "user", "content": "d"}])
+    assert len(client._litellm.calls) == 1 and waits == []
+    assert client_module._retry_after_s(_RateLimited(wait="1h2m3s")) == 3723
+    assert client_module._retry_after_s(_RateLimited(wait="450ms")) == 0.45
+
+
+def test_failed_calls_surface_the_provider_error(tmp_path):
+    """LiteLLM retries a failed call through tenacity. Without it, every failure (rate limits included) became
+    "tenacity import failed", hiding the provider's error and its 429 status from our own retries."""
+    from app.config import Settings
+
+    client = LLMClient(Settings(data_dir=tmp_path, llm_cache=False, ollama_api_base="http://127.0.0.1:9",
+                                llm_timeout_s=5, llm_num_retries=1), Tracer(tmp_path / "traces"))
+    try:
+        client.complete("ollama/none", [{"role": "user", "content": "hi"}])  # nothing listens on port 9
+    except Exception as exc:  # noqa: BLE001 - which error it is, is what this test checks
+        message = str(exc)
+    else:
+        pytest.fail("a closed port answered")
+    assert "tenacity" not in message
+
+
+def test_concurrent_calls_are_capped_per_provider(tmp_path):
+    from app.config import Settings
+
+    assert Settings(llm_provider_concurrency=" groq = 2 , gemini=1,").provider_concurrency == {"groq": 2, "gemini": 1}
+    client = LLMClient(Settings(data_dir=tmp_path, llm_cache=False, llm_provider_concurrency="groq=2"),
+                       Tracer(tmp_path / "traces"))
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+
+    def completion(**_):
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.05)
+        with lock:
+            state["active"] -= 1
+        return _reply("ok")
+    client._litellm = SimpleNamespace(completion=completion, completion_cost=lambda **_: 0.0)
+
+    def peak(model: str) -> int:
+        state["peak"] = 0
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(lambda i: client.complete(model, [{"role": "user", "content": f"{model} {i}"}]), range(8)))
+        return state["peak"]
+    assert peak("groq/m") == 2
+    assert peak("openai/m") > 2  # providers without a limit are not slowed down
 
 
 def test_cache_roundtrip(tmp_path):

@@ -59,6 +59,20 @@ export default function ExperimentPage() {
           <pre className="error">{r.experiment.error}</pre>
         </section>
       )}
+      {r?.experiment.status === "done" && r.summary.errors > 0 && (
+        <section className="card">
+          <div className="spread">
+            <h2>{r.summary.errors} model call{r.summary.errors === 1 ? "" : "s"} failed</h2>
+            <button onClick={resume}>Retry failed calls</button>
+          </div>
+          <p className="muted">
+            Rate limits, timeouts and provider outages are not wrong answers. Until they are retried they count as
+            F1 0 in the mean; F1 over the answered questions is {fmt(r.summary.f1_answered)}. Retrying asks only
+            these questions again.
+          </p>
+          {resumeError && <p className="error">{resumeError}</p>}
+        </section>
+      )}
       {r && (
         <div className="tiles">
           <div className="tile"><div className="label">Mean F1</div><div className="value">{fmt(r.summary.f1)}</div>

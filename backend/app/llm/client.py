@@ -4,6 +4,9 @@ LiteLLM gives one API for Groq ("groq/..."), Gemini ("gemini/..."), OpenAI ("ope
 Anthropic ("anthropic/...") and Ollama ("ollama/..."); it also reports token usage and cost. Responses at
 temperature 0 are cached on disk (keyed by model + messages + parameters), including their original
 latency and cost, so a cached rerun reports the same numbers as the first run.
+
+Free tiers allow few requests per minute, so calls are capped per provider (`LLM_PROVIDER_CONCURRENCY`) and an
+HTTP 429 is waited out (the provider's Retry-After, else exponential backoff) instead of becoming a failed answer.
 """
 
 from __future__ import annotations
@@ -11,8 +14,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
+import threading
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
@@ -41,6 +47,8 @@ class LLMClient:
         self.tracer = tracer or get_tracer()
         self.cache = ResponseCache(self.settings.data_dir / "llm_cache.sqlite") if self.settings.llm_cache else None
         self._litellm = None
+        self._slots = {p: threading.BoundedSemaphore(n) for p, n in self.settings.provider_concurrency.items()}
+        self._sleep = time.sleep
 
     def _lib(self):
         if self._litellm is None:
@@ -93,9 +101,9 @@ class LLMClient:
             kwargs["api_base"] = self.settings.ollama_api_base
         if trace_id:
             kwargs["metadata"] = {"trace_id": trace_id, "generation_name": name}
-        started = time.perf_counter()
-        r = litellm.completion(**kwargs)
-        latency = (time.perf_counter() - started) * 1000
+        slot = self._slots.get(model.split("/", 1)[0] if "/" in model else "openai")
+        with slot if slot is not None else nullcontext():
+            r, latency = self._completion(litellm, kwargs)
         usage = getattr(r, "usage", None)
         try:
             cost = float(litellm.completion_cost(completion_response=r) or 0.0)
@@ -106,6 +114,27 @@ class LLMClient:
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0, cost_usd=cost, latency_ms=latency,
         )
+
+    def _completion(self, litellm, kwargs: dict) -> tuple[object, float]:
+        """litellm.completion, waiting out HTTP 429s. Returns the response and the latency of the attempt that
+        succeeded, so time spent waiting for a rate limit is not reported as model latency."""
+        attempt = 0
+        while True:
+            started = time.perf_counter()
+            try:
+                return litellm.completion(**kwargs), (time.perf_counter() - started) * 1000
+            except Exception as exc:
+                asked = _retry_after_s(exc)
+                if (getattr(exc, "status_code", None) != 429 or attempt >= self.settings.llm_rate_limit_retries
+                        or (asked or 0) > self.settings.llm_rate_limit_max_wait_s):  # e.g. a used-up daily quota
+                    raise
+                attempt += 1
+                # Jitter keeps threads that were limited together from all retrying at the same moment.
+                wait = asked + random.uniform(0, 1) if asked is not None else 2.0 ** attempt * random.uniform(0.75, 1.25)
+                wait = min(max(wait, 1.0), self.settings.llm_rate_limit_max_wait_s)
+                log.warning("%s is rate-limited; retry %d of %d in %.1f s", kwargs["model"], attempt,
+                            self.settings.llm_rate_limit_retries, wait)
+                self._sleep(wait)
 
     def _trace(self, trace_id: str | None, name: str, messages: list[dict], resp: LLMResponse) -> None:
         if trace_id:
@@ -118,6 +147,28 @@ class LLMClient:
     def complete_json(self, model: str, messages: list[dict], **kwargs) -> tuple[dict | list | None, LLMResponse]:
         resp = self.complete(model, messages, json_mode=True, **kwargs)
         return extract_json(resp.text), resp
+
+
+_RETRY_IN = re.compile(r"(?:retry|try again) in (?:(\d+)h)?(?:(\d+)m(?!s))?(\d+(?:\.\d+)?)\s*(ms|s)\b", re.IGNORECASE)
+
+
+def _retry_after_s(exc: Exception) -> float | None:
+    """Seconds a rate-limited provider asks to wait: its Retry-After header, or "try again in 7.6s" / "in
+    7m30.5s" in the error message (Groq, Gemini). None when it does not say."""
+    for headers in (getattr(exc, "litellm_response_headers", None),
+                    getattr(getattr(exc, "response", None), "headers", None)):
+        try:
+            value = headers.get("retry-after") if headers else None
+            if value is not None:
+                return float(value)
+        except (AttributeError, TypeError, ValueError):  # e.g. an HTTP-date Retry-After
+            pass
+    match = _RETRY_IN.search(str(exc))
+    if match:
+        hours, minutes, amount, unit = match.groups()
+        seconds = float(amount) / (1000 if unit.lower() == "ms" else 1)
+        return int(hours or 0) * 3600 + int(minutes or 0) * 60 + seconds
+    return None
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)

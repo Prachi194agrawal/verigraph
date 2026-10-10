@@ -175,6 +175,147 @@ def test_api_flow(store, loaded, tmp_path, monkeypatch):
         db_module._engine = None
 
 
+def test_failed_model_calls_are_retried_not_scored_as_wrong(store, loaded, tmp_path, monkeypatch):
+    """A failed call (rate limit, timeout) is not a wrong answer: the finished experiment stays resumable, and
+    resuming asks only those questions again, ending with the scores of a run whose calls never failed."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from app import db as db_module
+    from app.config import get_settings
+    from app.db import session_scope
+    from app.llm import client as client_module
+    from app.llm.client import get_llm
+    from app.models import Dataset, Experiment, GraphBuild, Repo
+    from app.workers.jobs import run_dataset, run_experiment
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'retry.db'}")
+    monkeypatch.setenv("EMBEDDING_MODEL", "hash")
+    monkeypatch.setenv("LLM_CACHE", "false")  # every retry must reach the model
+    get_settings.cache_clear()
+    get_llm.cache_clear()
+    db_module._engine = None
+    from app.main import app
+
+    def new_experiment() -> int:
+        with session_scope() as db:
+            exp = Experiment(dataset_id=dataset_id, model="mock/extractive", pipeline="graphrag", prompt_version="v1",
+                             options={"concurrency": 1})
+            db.add(exp)
+            db.flush()
+            return exp.id
+
+    try:
+        with TestClient(app) as client:
+            with session_scope() as db:  # the fixture graph that `loaded` wrote, registered as a finished build
+                repo = Repo(url=str(loaded.repo_url), name="mini")
+                db.add(repo)
+                db.flush()
+                build = GraphBuild(repo_id=repo.id, repo="mini", graph_id=BUILD, parser_version="test", status="done",
+                                   stats={"embeddings": {"embedding_model": "hash"}})
+                db.add(build)
+                db.flush()
+                ds = Dataset(build_id=build.id, version="retry", options={"families": ["callers", "impact"]})
+                db.add(ds)
+                db.flush()
+                dataset_id = ds.id
+            run_dataset(dataset_id)
+            clean = new_experiment()
+            run_experiment(clean)
+            want = client.get(f"/experiments/{clean}/results").json()
+
+            seen: set[str] = set()
+            real = client_module.mock_complete
+
+            def flaky(model, messages):  # every other new prompt fails once, as a rate limit would
+                key = json.dumps(messages)
+                first = key not in seen
+                seen.add(key)
+                if first and len(seen) % 2:
+                    raise RuntimeError("RateLimitError: simulated HTTP 429")
+                return real(model, messages)
+            monkeypatch.setattr(client_module, "mock_complete", flaky)
+
+            exp_id = new_experiment()
+            run_experiment(exp_id)
+            first = client.get(f"/experiments/{exp_id}/results").json()
+            failed = [a for a in first["answers"] if a["error"]]
+            assert first["experiment"]["status"] == "done" and 0 < len(failed) < len(first["answers"])
+            assert first["summary"]["errors"] == len(failed) and first["summary"]["f1"] <= want["summary"]["f1"]
+            assert first["summary"]["f1_answered"] is not None
+            compared = client.get("/compare", params={"a": exp_id, "b": clean}).json()
+            assert compared["excluded_failed_calls"] == len(failed) and compared["diff"] == 0.0
+
+            assert client.post(f"/experiments/{clean}/resume").status_code == 409  # nothing failed there
+            assert client.post(f"/experiments/{exp_id}/resume").status_code == 202  # runs inline
+            after = client.get(f"/experiments/{exp_id}/results").json()
+            assert after["experiment"]["status"] == "done" and after["summary"]["errors"] == 0
+            assert sorted(a["question_id"] for a in after["answers"]) == sorted(a["question_id"] for a in want["answers"])
+            assert after["summary"]["f1"] == want["summary"]["f1"]
+    finally:
+        get_settings.cache_clear()
+        get_llm.cache_clear()
+        db_module._engine = None
+
+
+def test_a_failing_semantic_model_does_not_fail_the_build(store, history_repo, tmp_path, monkeypatch):
+    """Summaries and feature tags are optional and never gold: a provider error there is recorded on the build,
+    and the structure graph it already wrote stays usable."""
+    from app import db as db_module
+    from app.config import get_settings
+    from app.db import init_db, session_scope
+    from app.models import GraphBuild, Repo
+    from app.workers import jobs
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'semantic.db'}")
+    monkeypatch.setenv("EMBEDDING_MODEL", "hash")
+    get_settings.cache_clear()
+    db_module._engine = None
+
+    def used_up(*_args, **_kwargs):
+        raise RuntimeError("RateLimitError: daily token quota used up")
+    monkeypatch.setattr(jobs, "summarize_functions", used_up)
+    graph_id = None
+    try:
+        init_db()
+        with session_scope() as db:
+            repo = Repo(url=str(history_repo), name="mini")
+            db.add(repo)
+            db.flush()
+            build = GraphBuild(repo_id=repo.id, repo="mini", parser_version="test",
+                               options={"github": False, "semantic_model": "mock/empty"})
+            db.add(build)
+            db.flush()
+            build_id, graph_id = build.id, build.graph_id
+        jobs.run_build(build_id)
+        with session_scope() as db:
+            build = db.get(GraphBuild, build_id)
+            assert build.status == "done", build.error
+            assert "daily token quota" in build.stats["semantic_error"]
+        assert store.counts(graph_id)["edges"]["CALLS"] == 17
+    finally:
+        if graph_id is not None:
+            store.delete_build(graph_id)
+        get_settings.cache_clear()
+        db_module._engine = None
+
+
+def test_agent_that_never_answers_is_scored_not_retried(store, loaded, tmp_path, monkeypatch):
+    """Running out of turns is the model's failure: an empty answer, not a failed call to ask again."""
+    from app.config import Settings
+    from app.eval.index import index_rows_from_graph
+    from app.llm import client as client_module
+
+    monkeypatch.setattr(client_module, "mock_complete", lambda model, messages: '{"action": "query", "cypher": "RETURN 1 AS x"}')
+    llm = LLMClient(Settings(data_dir=tmp_path, llm_cache=False), Tracer(tmp_path / "traces"))
+    ctx = PipelineContext(store, llm, BuildIndex.from_rows(index_rows_from_graph(loaded)), BUILD, "mini", None)
+    out = make_pipeline("cypher_agent", ctx).answer(QuestionInput(1, "callers", "Who calls `helper`?"), "mock/extractive")
+    assert out.error is None and out.items == [] and len(out.steps) == 4
+
+
 def test_graphrag_context_has_no_duplicate_edges(store, loaded, tmp_path):
     from app.config import Settings
     from app.eval.index import index_rows_from_graph

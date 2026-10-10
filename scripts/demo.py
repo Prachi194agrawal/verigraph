@@ -54,11 +54,15 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="answer at most this many questions per experiment")
     parser.add_argument("--pipelines", default="none,vector,graphrag,cypher_agent")
     parser.add_argument("--timeout", type=int, default=1800, help="seconds per job")
+    parser.add_argument("--retries", type=int, default=3,
+                        help="times to re-ask questions whose model call failed (e.g. free-tier rate limits)")
     args = parser.parse_args()
     models = list(dict.fromkeys(m.strip() for m in args.models.split(",") if m.strip()))
     pipelines = list(dict.fromkeys(p.strip() for p in args.pipelines.split(",") if p.strip()))
     if not models or not pipelines or args.per_family < 1 or args.timeout < 1 or (args.limit is not None and args.limit < 1):
         parser.error("models and pipelines must not be empty; per-family, limit and timeout must be positive")
+    if args.retries < 0:
+        parser.error("retries must not be negative")
     try:
         health = request(args.api, "/health")
         if health.get("database") != "ok" or health.get("neo4j") != "ok":
@@ -83,11 +87,18 @@ def main() -> int:
             "limit": args.limit,
         })
         for experiment in experiments:
-            wait(args.api, f"/experiments/{experiment['id']}", args.timeout)
-            results = request(args.api, f"/experiments/{experiment['id']}/results")
-            errors = [row for row in results["answers"] if row.get("error")]
-            if errors:
-                raise RuntimeError(f"Experiment {experiment['id']} has {len(errors)} answer errors: {errors[0]['error']}")
+            path = f"/experiments/{experiment['id']}"
+            wait(args.api, path, args.timeout)
+            for attempt in range(args.retries + 1):
+                errors = [row for row in request(args.api, f"{path}/results")["answers"] if row.get("error")]
+                if not errors:
+                    break
+                if attempt == args.retries:
+                    raise RuntimeError(f"Experiment {experiment['id']} has {len(errors)} answer errors: {errors[0]['error']}")
+                # Failed calls (rate limits, timeouts) are asked again; answered questions are kept.
+                print(f"  {len(errors)} failed call(s), e.g. {errors[0]['error'][:120]}; retrying them", flush=True)
+                request(args.api, f"{path}/resume", {})
+                wait(args.api, path, args.timeout)
         print("Step 7: leaderboard", flush=True)
         board = request(args.api, f"/leaderboard?dataset_id={dataset['id']}")
         print(f"{'Model':32} {'Pipeline':14} {'F1':>7} {'Answers':>7} {'Errors':>6}")

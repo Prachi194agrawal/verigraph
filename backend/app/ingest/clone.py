@@ -1,21 +1,32 @@
 """Get a repository onto disk at a pinned commit.
 
 Remote repos are mirrored once into `<data_dir>/mirrors` and each build gets its own clone from that
-mirror, so rebuilding at another commit needs no network and builds never share a working tree.
+mirror, so rebuilding at another commit needs no network and builds never share a working tree. Builds of
+the same repository take turns on its mirror (a file lock), and network failures are retried.
 Local git repos are cloned too (the user's working copy is never touched); plain folders are copied
 and have no history.
 """
 
 from __future__ import annotations
 
+import fcntl
+import logging
 import re
 import shutil
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from git import GitCommandError
 from git import Repo as GitRepo
 
+log = logging.getLogger(__name__)
+
+FETCH_ATTEMPTS = 3  # tries to clone or update a mirror before the build fails
+RETRY_WAIT_S = 10.0  # times the attempt number
+_HTTP11 = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.version", "GIT_CONFIG_VALUE_0": "HTTP/1.1"}
 _GITHUB = re.compile(r"github\.com[/:]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 _SCP_LIKE = re.compile(r"^[\w.-]+@[\w.-]+:")  # git@github.com:owner/name.git
 _COPY_IGNORE = shutil.ignore_patterns(".git", "node_modules", ".venv", "venv", "__pycache__", ".tox")
@@ -82,12 +93,46 @@ def checkout_repo(url: str, commit: str | None, dest: Path, mirrors_dir: Path) -
         slug = github_slug(url)
         mirrors_dir.mkdir(parents=True, exist_ok=True)
         mirror = mirrors_dir / ((slug or repo_name(url)).replace("/", "__") + ".git")
-        if mirror.exists():
-            GitRepo(mirror).git.remote("update", "--prune")
-        else:
-            GitRepo.clone_from(url, mirror, mirror=True)
-        source = str(mirror)
+        with _mirror_lock(mirror):
+            _sync_mirror(url, mirror)
+            return _checkout(str(mirror), commit, dest, slug)
+    return _checkout(source, commit, dest, slug)
 
+
+@contextmanager
+def _mirror_lock(mirror: Path) -> Iterator[None]:
+    """Every build of a repository shares its mirror, so one at a time updates it and clones from it. Without
+    this, a second build updated the half-written mirror of a first, which then deleted it on a failed clone."""
+    with open(mirror.with_name(mirror.name + ".lock"), "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)  # released when the file closes, also if the process dies
+        yield
+
+
+def _sync_mirror(url: str, mirror: Path) -> None:
+    """Clone or update the mirror, retrying network failures. Retries use HTTP/1.1, because GitHub can reset an
+    HTTP/2 stream during a long transfer ("curl 92 ... was not closed cleanly", "early EOF")."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        existed = mirror.exists()
+        env = _HTTP11 if attempt > 1 else None
+        try:
+            if existed:
+                repo = GitRepo(mirror)
+                with repo.git.custom_environment(**(env or {})):
+                    repo.git.remote("update", "--prune")
+            else:
+                GitRepo.clone_from(url, mirror, mirror=True, env=env)
+            return
+        except GitCommandError as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            if not existed:  # never retry on top of a partial clone
+                shutil.rmtree(mirror, ignore_errors=True)
+            log.warning("fetching %s failed (attempt %d of %d), retrying over HTTP/1.1: %s", url, attempt,
+                        FETCH_ATTEMPTS, str(exc.stderr or exc).strip()[-300:])
+            time.sleep(RETRY_WAIT_S * attempt)
+
+
+def _checkout(source: str, commit: str | None, dest: Path, slug: str | None) -> Checkout:
     repo = GitRepo.clone_from(source, dest, no_checkout=True)
     target = commit or repo.head.commit.hexsha
     try:

@@ -23,6 +23,7 @@ interface Quality {
   embeddings: Record<string, unknown> | null;
   edge_audit: Record<string, { checked: number; correct: number; precision: number | null }>;
   symbol_audit: SymbolAudit | null;
+  semantic_error?: string | null;
 }
 
 function Tile({ label, value, note }: { label: string; value: React.ReactNode; note?: string }) {
@@ -173,6 +174,16 @@ export default function BuildPage() {
                     note={`on the repo's own code: ${q.symbol_audit.functions_flagged} of ${q.symbol_audit.functions_checked} flagged`} />
             )}
           </div>
+          {q.semantic_error && (
+            <section className="card">
+              <h2>LLM summaries and feature tags failed</h2>
+              <p className="muted">
+                The structure graph, history and embeddings are complete, and questions never use this layer.
+                Check the model name and its provider key, then rebuild to add summaries.
+              </p>
+              <pre className="error">{q.semantic_error}</pre>
+            </section>
+          )}
           <section className="card">
             <h2>How call sites were resolved</h2>
             <ResolutionBar q={q} />

@@ -56,9 +56,13 @@ def summarize(rows: list[dict]) -> dict:
         elif r["family"] == "inheritance" and r["hop_count"]:
             by_depth[r["hop_count"]].append(r["scores"].get("f1", 0.0))
     ci = bootstrap_ci(f1)
+    errors = sum(1 for r in rows if r["error"])
     summary = {
-        "n": len(rows), "errors": sum(1 for r in rows if r["error"]),
+        # `f1` counts a failed call as 0, so every row is over the same questions; `f1_answered` leaves failed calls
+        # out, so a run hit by rate limits shows the model's quality next to its error count.
+        "n": len(rows), "errors": errors, "error_rate": round(errors / len(rows), 4) if rows else None,
         "f1": ci["mean"], "f1_ci": [ci["lo"], ci["hi"]],
+        "f1_answered": _avg([r["scores"].get("f1", 0.0) for r in qa if not r["error"]]),
         "f1_by_family": {k: _avg(v) for k, v in sorted(by_family.items())},
         "n_by_family": {k: len(v) for k, v in sorted(by_family.items())},
         "f1_by_hop": {str(k): _avg(v) for k, v in sorted(by_hop.items())},
@@ -98,7 +102,11 @@ def hop_curve(db: Session, dataset_id: int) -> list[dict]:
 
 
 def compare(db: Session, experiment_a: int, experiment_b: int, metric: str = "f1") -> dict:
-    def per_question(exp_id: int) -> dict[int, float]:
-        return {r["question_id"]: r["scores"].get(metric, 0.0) for r in answer_rows(db, exp_id)}
-    return {"metric": metric, "a": experiment_a, "b": experiment_b,
-            **paired_bootstrap(per_question(experiment_a), per_question(experiment_b))}
+    """Paired difference on the questions both experiments answered; a failed call on either side drops the pair."""
+    rows_a, rows_b = answer_rows(db, experiment_a), answer_rows(db, experiment_b)
+    failed = {r["question_id"] for r in rows_a + rows_b if r["error"]}
+
+    def per_question(rows: list[dict]) -> dict[int, float]:
+        return {r["question_id"]: r["scores"].get(metric, 0.0) for r in rows if r["question_id"] not in failed}
+    return {"metric": metric, "a": experiment_a, "b": experiment_b, "excluded_failed_calls": len(failed),
+            **paired_bootstrap(per_question(rows_a), per_question(rows_b))}

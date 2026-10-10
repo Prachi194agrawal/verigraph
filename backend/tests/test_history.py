@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.graph.builder import build_structure
 from app.graph.parser import PythonParser
 from app.ingest.clone import checkout_repo, github_slug, repo_name
@@ -27,6 +29,49 @@ def test_checkout_pins_a_commit(history_repo, tmp_path):
     first = checkout_repo(str(history_repo), "HEAD~1", tmp_path / "a", tmp_path / "m")
     assert "# add one" in (first.path / "src/minipkg/utils.py").read_text()
     assert "# turbo" not in (first.path / "src/minipkg/core.py").read_text()
+
+
+def test_builds_of_one_repository_take_turns_on_its_mirror(history_repo, tmp_path):
+    """A second build of a repository waits for the first, instead of updating a mirror that is still being
+    written (or that the first deletes after a failed clone)."""
+    import threading
+
+    from app.ingest.clone import _mirror_lock
+
+    mirrors = tmp_path / "mirrors"
+    mirrors.mkdir()
+    done = []
+    with _mirror_lock(mirrors / "mini.git"):  # another build is fetching this repository
+        build = threading.Thread(target=lambda: done.append(
+            checkout_repo(f"file://{history_repo}", None, tmp_path / "co", mirrors)))
+        build.start()
+        build.join(0.5)
+        assert build.is_alive() and not (mirrors / "mini.git").exists()  # waiting, not cloning
+    build.join(30)
+    assert done and done[0].has_history and len(done[0].commit_sha) == 40
+
+
+def test_a_failed_mirror_clone_is_retried_over_http11(history_repo, tmp_path, monkeypatch):
+    from git import GitCommandError
+    from git import Repo as GitRepo
+
+    from app.ingest import clone
+
+    real = GitRepo.clone_from
+    envs = []
+
+    def flaky(url, to_path, **kwargs):
+        if kwargs.get("mirror"):
+            envs.append(kwargs.get("env"))
+            if len(envs) == 1:
+                Path(to_path).mkdir()  # the network dropped mid-transfer and left a partial mirror
+                raise GitCommandError(["git", "clone"], 128, "curl 92 HTTP/2 stream 5 was not closed cleanly")
+        return real(url, to_path, **kwargs)
+    monkeypatch.setattr(clone.GitRepo, "clone_from", flaky)
+    monkeypatch.setattr(clone, "RETRY_WAIT_S", 0)
+    checkout = clone.checkout_repo(f"file://{history_repo}", None, tmp_path / "co", tmp_path / "mirrors")
+    assert checkout.has_history and len(checkout.commit_sha) == 40
+    assert envs == [None, clone._HTTP11]  # the retry used HTTP/1.1
 
 
 def test_changed_functions_uses_both_sides_of_the_diff():

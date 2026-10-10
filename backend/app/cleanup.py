@@ -6,7 +6,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
 from app.eval.index import evict_build_index
@@ -43,6 +43,13 @@ def active_jobs(db: Session, build_id: int) -> list[str]:
     return jobs
 
 
+def delete_answers(db: Session, answer_ids: Select) -> None:
+    """Delete answers (a select of their ids) and every check, score and label that hangs off them."""
+    for table in (HumanLabel, ClaimVerdict, SymbolCheck, TestRun, Score):
+        db.execute(delete(table).where(table.answer_id.in_(answer_ids)))
+    db.execute(delete(Answer).where(Answer.id.in_(answer_ids)))
+
+
 def delete_build(db: Session, store: GraphStore, build_id: int, data_dir: Path) -> dict:
     """Neo4j first: if the graph cannot be removed, the results stay and the call can be retried."""
     build = db.get(GraphBuild, build_id)
@@ -53,9 +60,7 @@ def delete_build(db: Session, store: GraphStore, build_id: int, data_dir: Path) 
     experiments = select(Experiment.id).where(Experiment.dataset_id.in_(datasets))
     answers = select(Answer.id).where(Answer.experiment_id.in_(experiments))
     counts = {"answers": len(db.execute(answers).scalars().all())}
-    for table in (HumanLabel, ClaimVerdict, SymbolCheck, TestRun, Score):
-        db.execute(delete(table).where(table.answer_id.in_(answers)))
-    db.execute(delete(Answer).where(Answer.experiment_id.in_(experiments)))
+    delete_answers(db, answers)
     counts["experiments"] = db.execute(delete(Experiment).where(Experiment.dataset_id.in_(datasets))).rowcount
     db.execute(delete(Question).where(Question.dataset_id.in_(datasets)))
     counts["datasets"] = db.execute(delete(Dataset).where(Dataset.build_id == build_id)).rowcount
