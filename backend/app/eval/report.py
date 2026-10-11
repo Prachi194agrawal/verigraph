@@ -13,8 +13,8 @@ from app.models import Answer, Experiment, Question, Score
 
 CODEGEN_METRICS = ("syntax_ok", "hallucinated", "missing_symbol_rate", "wrong_arity_rate", "callee_f1",
                    "test_pass_rate")
-EXTRA_METRICS = ("context_recall", "claim_precision", "contradicted_claim_rate", "invented_item_rate",
-                 "faithfulness", "hit_at_1", "hit_at_5", "premise_rejected")
+EXTRA_METRICS = ("context_recall", "claim_precision", "contradicted_claim_rate", "unverifiable_claim_rate", "invented_item_rate",
+                 "unrecognized_item_rate", "faithfulness", "judge_error", "hit_at_1", "hit_at_5", "premise_rejected")
 
 
 def answer_rows(db: Session, experiment_id: int) -> list[dict]:

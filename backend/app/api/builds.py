@@ -71,7 +71,7 @@ def build_quality(build_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/builds/{build_id}/symbols")
-def search_symbols(build_id: int, q: str = Query(min_length=1), limit: int = Query(20, ge=1, le=100),
+def search_symbols(build_id: int, q: str = Query("", min_length=0), limit: int = Query(20, ge=1, le=100),
                    db: Session = Depends(get_db)) -> list[dict]:
     return get_store().search_symbols(_build(db, build_id).graph_id, q, limit)
 
@@ -87,6 +87,16 @@ def node_details(build_id: int, qn: str, db: Session = Depends(get_db)) -> dict:
 @router.get("/builds/{build_id}/neighborhood")
 def neighborhood(build_id: int, qn: str, depth: int = Query(1, ge=1, le=3), db: Session = Depends(get_db)) -> dict:
     return get_store().neighborhood(_build(db, build_id).graph_id, qn, depth)
+
+
+@router.get("/builds/{build_id}/files")
+def list_files(build_id: int, q: str = "", limit: int = Query(100, ge=1, le=1000),
+               db: Session = Depends(get_db)) -> list[dict]:
+    return get_store().read(
+        "MATCH (f:File {build_id: $b}) WHERE toLower(f.path) CONTAINS toLower($q) "
+        "RETURN f.path AS path, coalesce(f.language, 'python') AS language, "
+        "coalesce(f.analysis_level, 'semantic') AS analysis_level, f.loc AS loc ORDER BY f.path LIMIT $limit",
+        {"b": _build(db, build_id).graph_id, "q": q, "limit": limit})
 
 
 @router.get("/builds/{build_id}/file")

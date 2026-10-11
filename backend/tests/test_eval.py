@@ -51,10 +51,10 @@ def test_claim_verdicts(mini_index):
         "`helper` is defined in src/minipkg/core.py. `dispatch` does not call `helper`. `run` calls `helper`.",
         mini_index)}
     assert verdicts[("Engine.run", "calls", "normalize")] == "supported"
-    assert verdicts[("normalize", "calls", "scale")] == "contradicted"
+    assert verdicts[("normalize", "calls", "scale")] == "unverifiable"
     assert verdicts[("TurboEngine", "inherits", "BaseEngine")] == "supported"
     assert verdicts[("helper", "defined_in", "src/minipkg/core.py")] == "contradicted"
-    assert verdicts[("dispatch", "not_calls", "helper")] == "supported"
+    assert verdicts[("dispatch", "not_calls", "helper")] == "unverifiable"
     assert verdicts[("run", "calls", "helper")] == "unverifiable"  # "run" is ambiguous
 
 

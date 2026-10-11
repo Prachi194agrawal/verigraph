@@ -71,6 +71,9 @@ def mock_complete(model: str, messages: list[dict]) -> str:
         if not m:
             continue
         src, rel, dst = m.groups()
+        if rel == "LANGUAGE" and any(_matches(dst, t) for t in targets) and src not in answer:
+            answer.append(src)
+            continue
         if rel in ("CALLS", "INHERITS") and any(_matches(dst, t) for t in targets) and src not in answer:
             answer.append(src)
             verb = "calls" if rel == "CALLS" else "inherits from"

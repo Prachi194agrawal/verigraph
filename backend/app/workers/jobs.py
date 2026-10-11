@@ -94,16 +94,38 @@ def run_build(build_id: int) -> None:
             build.status, build.error, build.parser_version = "running", None, PARSER_VERSION
         say("step 1: checking out the repository")
         checkout = checkout_repo(url, requested, settings.data_dir / "builds" / str(build_id) / "repo",
-                                 settings.data_dir / "mirrors")
+                                 settings.data_dir / "mirrors", history=bool(opts.get("history", False)))
+        # Record the pinned version immediately, including while a build is still running.
+        with session_scope() as db:
+            row = db.get(GraphBuild, build_id)
+            row.commit_sha, row.checkout_path = checkout.commit_sha, str(checkout.path)
         say("step 2: parsing and resolving calls")
+        mode = opts.get("analysis_mode", "fast")
+        resolvers = opts.get("resolvers") or (["import", "name"] if mode == "fast" else settings.resolver_order)
+        started = time.perf_counter()
         graph = build_structure(checkout.path, name, url, checkout.commit_sha,
-                                opts.get("resolvers") or settings.resolver_order, settings.scip_python_bin, say)
+                                resolvers, settings.scip_python_bin, say)
         stats = dict(graph.stats)
-        if opts.get("history", True) and checkout.has_history:
+        stats["analysis_mode"] = mode
+        stats["structure_seconds"] = round(time.perf_counter() - started, 3)
+        stats.setdefault("warnings", []).append(
+            "Static relationships describe the analyzed snapshot. Dynamic dispatch and cross-language calls may be missing.")
+        if mode == "fast" and not opts.get("resolvers"):
+            stats["warnings"].append("Fast mode uses Python import resolution; select thorough mode for Jedi/SCIP inference.")
+        stats["capabilities"] = {
+            "codegen": any(f.language == "python" for f in graph.functions.values()),
+            "history": bool(opts.get("history")),
+            "question_families": ["files", "lookup", "callers", "impact", "inheritance", "false_premise"]
+                + (["history"] if opts.get("history") else [])
+                + (["localization"] if opts.get("history") and opts.get("github") else [])
+                + (["codegen"] if any(f.language == "python" for f in graph.functions.values()) else []),
+            "call_resolution": "Observed static edges, never complete runtime coverage",
+        }
+        if opts.get("history", False) and checkout.has_history:
             say("step 3: mining git history")
             stats["history"] = mine_history(checkout.path, graph, int(opts.get("max_commits")
                                                                       or settings.max_history_commits), say)
-            if opts.get("github", True) and checkout.github_slug:
+            if opts.get("github", False) and checkout.github_slug:
                 stats["github"] = enrich_from_github(graph, checkout.github_slug, settings.github_token,
                                                      settings.max_pull_requests,
                                                      settings.github_unauthenticated_budget, say)
@@ -164,6 +186,8 @@ def run_dataset(dataset_id: int) -> None:
                     meta=d.meta))
             ds = db.get(Dataset, dataset_id)
             ds.n_questions, ds.status, ds.progress, ds.finished_at = len(drafts), "done", "done", utcnow()
+            if not drafts:
+                ds.progress = "No verifiable questions found. Explore the files and language coverage, or try thorough analysis."
     except Exception:  # noqa: BLE001
         _fail(Dataset, dataset_id)
 
@@ -173,7 +197,8 @@ def run_dataset(dataset_id: int) -> None:
 def persist_answer(db, experiment_id: int, question_id: int, out: PipelineOutput, scored: ScoredAnswer) -> Answer:
     answer = Answer(
         experiment_id=experiment_id, question_id=question_id, text=out.raw_text, parsed_items=scored.items,
-        match={"raw": out.items, "tp": scored.tp, "fp": scored.fp, "fn": scored.fn, "invented": scored.invented},
+        match={"raw": out.items, "tp": scored.tp, "fp": scored.fp, "fn": scored.fn, "invented": scored.invented,
+               "notes": scored.notes},
         explanation=out.explanation,
         code=out.code, retrieved_nodes=out.retrieved_nodes[:300], steps=out.steps, latency_ms=out.latency_ms,
         prompt_tokens=out.prompt_tokens, completion_tokens=out.completion_tokens,
@@ -266,6 +291,14 @@ def _run_experiment(experiment_id: int) -> None:
     with session_scope() as db:
         exp = db.get(Experiment, experiment_id)
         exp.summary = summarize(answer_rows(db, experiment_id))
+        exp.summary = {**exp.summary, "evaluation_kind": "mock" if model.startswith("mock/") else "real",
+                       "embedding_model": embedding_model, "reference": "static graph at the pinned commit",
+                       "limitations": ["Scores measure agreement with the captured graph, not repository quality.",
+                                       "Unresolved calls and runtime behavior can be missing."]
+                       + (["Mock models check the software workflow; these are not model benchmark findings."]
+                          if model.startswith("mock/") else [])
+                       + (["Hash embeddings use lexical similarity, not neural semantic retrieval."]
+                          if embedding_model == "hash" else [])}
         exp.status, exp.progress, exp.finished_at = "done", "done", utcnow()
 
 

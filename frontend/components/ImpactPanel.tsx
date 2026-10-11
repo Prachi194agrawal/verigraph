@@ -14,7 +14,7 @@ export default function ImpactPanel({ buildId }: { buildId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImpactResult | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  const graphLink = (name: string) => `/builds/${buildId}?symbol=${encodeURIComponent(name)}`;
+  const graphLink = (name: string) => `/builds/${buildId}?symbol=${encodeURIComponent(name)}#explore`;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -43,11 +43,11 @@ export default function ImpactPanel({ buildId }: { buildId: number }) {
 
   const tests = (result?.tests ?? []).map((t) => t.pytest_id ?? t.qualified_name);
   return (
-    <section className="card">
-      <h2>Change impact</h2>
+    <section className="card" id="impact">
+      <h2>Check a proposed change</h2>
       <p className="muted">
-        Name changed functions or paste a unified diff of this build&apos;s commit (a pull request&apos;s base). Precise
-        CALLS edges are followed backwards; name-matched callers are listed apart because those edges are guesses.
+        Enter a function name from the explorer, or paste a Git diff against this build&apos;s commit. The graph follows
+        resolved calls backwards to find potential callers and tests. This works without an AI model.
       </p>
       <form onSubmit={submit}>
         <div className="row">
@@ -55,7 +55,7 @@ export default function ImpactPanel({ buildId }: { buildId: number }) {
             <input type="text" value={functions} onChange={(e) => setFunctions(e.target.value)}
                    placeholder="Session.send, utils.super_len" style={{ minWidth: 360 }} />
           </label>
-          <label className="field">Hops
+          <label className="field">Call chain depth
             <select value={hops} onChange={(e) => setHops(Number(e.target.value))}>
               {[1, 2, 3, 4, 5].map((h) => <option key={h} value={h}>{h}</option>)}
             </select>
@@ -98,10 +98,11 @@ export default function ImpactPanel({ buildId }: { buildId: number }) {
             </div>
             <div>
               <div className="spread">
-                <h3>Tests to run ({tests.length})</h3>
-                {tests.length > 0 && <button className="ghost" onClick={() => copy("pytest ids", tests.join(" "))}>Copy pytest ids</button>}
+              <h3>Suggested tests ({tests.length})</h3>
+                {tests.length > 0 && <button className="ghost" onClick={() => copy("test identifiers", tests.join(" "))}>Copy test identifiers</button>}
               </div>
               <pre className="mono">{tests.length ? tests.join("\n") : "no test reaches the change through precise edges"}</pre>
+              <p className="secondary">Use the repository&apos;s test runner to run these tests. Python results may include pytest identifiers. Static analysis can miss tests that exercise dynamic calls.</p>
             </div>
           </div>
           {result.possibly_affected.length > 0 && (

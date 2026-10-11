@@ -16,9 +16,9 @@ from app.pipelines.base import Pipeline, PipelineOutput, QuestionInput
 from app.pipelines.parsing import _flatten
 
 SCHEMA = """Graph schema (node labels with key properties, then relationships):
-(:Repo {name, url, commit_sha})-[:CONTAINS]->(:Module {name, path, is_package})-[:CONTAINS]->(:File {path, module, is_test, loc})
+(:Repo {name, url, commit_sha})-[:CONTAINS]->(:Module {name, path, is_package})-[:CONTAINS]->(:File {path, module, language, analysis_level, is_test, loc})
 (:File)-[:DEFINES]->(:Class {qualified_name, name, module, file_path, bases, external_bases, start_line, end_line, docstring, is_test})
-(:File)-[:DEFINES]->(:Function {qualified_name, name, module, file_path, class_qn, signature, param_names, kind, start_line, end_line, docstring, summary, is_test, is_method, is_nested, pytest_id})
+(:File)-[:DEFINES]->(:Function {qualified_name, name, module, language, file_path, class_qn, signature, param_names, kind, start_line, end_line, docstring, summary, is_test, is_method, is_nested, pytest_id})
 (:Class)-[:DEFINES]->(:Function)                 methods
 (:Function)-[:DEFINES]->(:Function)              nested functions
 (:Function)-[:CALLS {line, lines, resolved_by}]->(:Function)
@@ -31,7 +31,10 @@ SCHEMA = """Graph schema (node labels with key properties, then relationships):
 (:PullRequest)-[:FIXES]->(:Issue {number, title, body, state})
 (:Function)-[:IMPLEMENTS {confidence}]->(:Feature {name, description})
 
-Qualified names look like "package.module.Class.method". committed_at is an ISO-8601 string.
+Qualified names are canonical graph identifiers; Python names look like "package.module.Class.method".
+Other languages include their language and file namespace. Use the stored identifiers verbatim.
+Calls are static observations; missing relationships do not prove runtime absence.
+committed_at is an ISO-8601 string.
 Example, the callers of a method:
 MATCH (c:Function {build_id: $build_id})-[:CALLS]->(f:Function {build_id: $build_id})
 WHERE f.qualified_name ENDS WITH '.Session.send' RETURN c.qualified_name"""
@@ -95,7 +98,7 @@ class CypherAgentPipeline(Pipeline):
                     else:
                         q_started = time.perf_counter()
                         try:
-                            rows = ctx.store.read(cypher, {"build_id": ctx.build_id}, timeout=15)
+                            rows = ctx.store.read_scoped(cypher, ctx.build_id, timeout=15)
                             step["rows"] = len(rows)
                             result = _format_rows(rows, max_rows)
                             out.retrieved_nodes += _strings(rows[:max_rows])

@@ -20,6 +20,7 @@ interface SymbolHit {
 interface FileView {
   path: string;
   content: string;
+  language?: string;
 }
 
 export default function GraphExplorer({ buildId, initialSymbol }: { buildId: number; initialSymbol?: string | null }) {
@@ -33,30 +34,46 @@ export default function GraphExplorer({ buildId, initialSymbol }: { buildId: num
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (query.trim().length < 2 || query === focus) {
+    setFocus(initialSymbol ?? null);
+    setQuery(initialSymbol ?? "");
+    setHits([]);
+  }, [initialSymbol, buildId]);
+
+  useEffect(() => {
+    if (query === focus) {
       setHits([]);
       return;
     }
+    let cancelled = false;
     const t = setTimeout(() => {
-      api<SymbolHit[]>(`/builds/${buildId}/symbols?q=${encodeURIComponent(query.trim())}&limit=25`)
-        .then(setHits).catch((e) => setError(String(e)));
+      api<SymbolHit[]>(`/builds/${buildId}/symbols?q=${encodeURIComponent(query.trim())}&limit=${query.trim() ? 25 : 12}`)
+        .then((next) => { if (!cancelled) { setHits(next); setError(null); } })
+        .catch((e) => { if (!cancelled) setError(String(e)); });
     }, 200);
-    return () => clearTimeout(t);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [query, buildId, focus]);
 
   useEffect(() => {
     if (!focus) return;
+    let cancelled = false;
     setError(null);
+    setFile(null);
+    setDetails(null);
+    setGraph(null);
     const qn = encodeURIComponent(focus);
     api<{ nodes: GraphNode[]; edges: GraphEdge[] }>(`/builds/${buildId}/neighborhood?qn=${qn}&depth=${depth}`)
-      .then(setGraph).catch((e) => setError(String(e)));
+      .then((next) => { if (!cancelled) setGraph(next); })
+      .catch((e) => { if (!cancelled) setError(String(e)); });
     api<Record<string, any>>(`/builds/${buildId}/node?qn=${qn}`)
       .then((d) => {
+        if (cancelled) return null;
         setDetails(d);
+        if (!d.file_path) return null;
         return api<FileView>(`/builds/${buildId}/file?path=${encodeURIComponent(d.file_path)}`);
       })
-      .then(setFile)
-      .catch((e) => setError(String(e)));
+      .then((next) => { if (!cancelled) setFile(next); })
+      .catch((e) => { if (!cancelled) setError(String(e)); });
+    return () => { cancelled = true; };
   }, [focus, depth, buildId]);
 
   const choose = useCallback((qn: string) => {
@@ -66,22 +83,24 @@ export default function GraphExplorer({ buildId, initialSymbol }: { buildId: num
   }, []);
 
   return (
-    <div className="card">
+    <div className="card" id="explore">
       <div className="spread">
-        <h2>Call-graph explorer</h2>
+        <h2>2. Explore symbols and source</h2>
         <div className="row">
           <label className="field">
-            Depth
+            Relationship depth
             <select value={depth} onChange={(e) => setDepth(Number(e.target.value))}>
               {[1, 2, 3].map((d) => <option key={d} value={d}>{d} hop{d > 1 ? "s" : ""}</option>)}
             </select>
           </label>
         </div>
       </div>
+      <p className="secondary">Search for a function or class you want to understand. Select a result to see its source and neighboring code. A caller uses this function; a callee is a function it uses.</p>
       <label className="field">
         Find a function or class
-        <input type="text" value={query} placeholder="e.g. Session.send" onChange={(e) => setQuery(e.target.value)} />
+        <input type="text" value={query} placeholder="Type part of a function or class name" onChange={(e) => setQuery(e.target.value)} />
       </label>
+      {!query && hits.length > 0 && <p className="secondary">Choose a symbol to start exploring:</p>}
       {hits.length > 0 && (
         <div className="search-results" role="listbox">
           {hits.map((h) => (
@@ -104,6 +123,7 @@ export default function GraphExplorer({ buildId, initialSymbol }: { buildId: num
               <dl className="kv">
                 <dt>Symbol</dt><dd className="mono">{details.qualified_name}</dd>
                 <dt>Kind</dt><dd>{details.kind}{details.is_test ? " (test)" : ""}</dd>
+                {details.language && <><dt>Language</dt><dd>{details.language}</dd></>}
                 <dt>Defined in</dt><dd className="mono">{details.file_path}:{details.start_line}-{details.end_line}</dd>
                 {details.signature && (<><dt>Signature</dt><dd className="mono">{details.signature}</dd></>)}
                 {details.summary && (<><dt>LLM summary</dt><dd>{details.summary}</dd></>)}
@@ -113,7 +133,7 @@ export default function GraphExplorer({ buildId, initialSymbol }: { buildId: num
             )}
             {file && details && (
               <div style={{ marginTop: 12 }}>
-                <CodeView key={`${file.path}:${details.start_line}`} code={file.content}
+                <CodeView key={`${file.path}:${details.start_line}`} code={file.content} path={file.path}
                           highlight={[details.start_line, details.end_line]} />
               </div>
             )}

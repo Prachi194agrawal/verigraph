@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Iterator
 from functools import lru_cache
 from pathlib import Path
 
-from neo4j import READ_ACCESS, GraphDatabase, Query
+from neo4j import READ_ACCESS, GraphDatabase, unit_of_work
 from neo4j.exceptions import Neo4jError
 
 from app.config import get_settings
@@ -66,13 +66,18 @@ class GraphStore:
     # -- generic access ----------------------------------------------------------------------------------
 
     def read(self, cypher: str, params: dict | None = None, timeout: float | None = None) -> list[dict]:
-        query = Query(cypher, timeout=timeout) if timeout else cypher
-
+        @unit_of_work(timeout=timeout)
         def work(tx):
-            return [record.data() for record in tx.run(query, params or {})]
+            return [record.data() for record in tx.run(cypher, params or {})]
 
         with self.driver.session(database=self.database, default_access_mode=READ_ACCESS) as session:
             return session.execute_read(work)
+
+    def read_scoped(self, cypher: str, build_id: int, timeout: float = 15) -> list[dict]:
+        """Execute a restricted agent query with an enforced build filter on each matched node."""
+        from app.graph.query_scope import scope_query
+
+        return self.read(scope_query(cypher), {"build_id": build_id}, timeout=timeout)
 
     def write(self, cypher: str, params: dict | None = None) -> None:
         def work(tx):
@@ -146,11 +151,14 @@ class GraphStore:
         self._create_nodes("File", [{
             "uid": uid(b, "file", f.path), "build_id": b, "path": f.path, "module": f.module, "is_test": f.is_test,
             "is_package": f.is_package, "loc": f.loc, "sha1": f.sha1, "parse_errors": f.parse_errors,
+            "language": f.language,
+            "analysis_level": f.analysis_level,
             "namespace_json": json.dumps(f.namespace, sort_keys=True),
         } for f in g.files.values()])
         self._create_nodes("Class", [{
             "uid": uid(b, "cls", c.qualified_name), "build_id": b, "qualified_name": c.qualified_name,
             "name": c.name, "module": c.module, "file_path": c.file_path, "bases": c.bases,
+            "language": c.language,
             "external_bases": list(g.external_bases.get(c.qualified_name, [])), "decorators": c.decorators,
             "start_line": c.start_line, "end_line": c.end_line, "docstring": c.docstring, "is_test": c.is_test,
             "is_nested": c.is_nested, "attributes": sorted(c.attributes),
@@ -160,6 +168,7 @@ class GraphStore:
         self._create_nodes("Function", [{
             "uid": uid(b, "fn", f.qualified_name), "build_id": b, "qualified_name": f.qualified_name,
             "name": f.name, "module": f.module, "file_path": f.file_path, "class_qn": f.class_qn,
+            "language": f.language,
             "signature": f.signature, "params_json": json.dumps([p.to_dict() for p in f.params]),
             "param_names": [p.name for p in f.params], "decorators": f.decorators, "start_line": f.start_line,
             "def_line": f.name_line,
@@ -319,15 +328,15 @@ class GraphStore:
             "f.module AS module, f.file_path AS file_path, f.class_qn AS class_qn, f.params_json AS params_json, "
             "f.kind AS kind, f.is_test AS is_test, f.is_nested AS is_nested, f.start_line AS start_line, "
             "f.end_line AS end_line, f.returns AS returns, f.unresolved_calls AS unresolved_calls, "
-            "f.pytest_id AS pytest_id", {"b": build_id})
+            "f.pytest_id AS pytest_id, f.language AS language", {"b": build_id})
         classes = self.read(
             "MATCH (c:Class {build_id: $b}) OPTIONAL MATCH (c)-[:INHERITS]->(p:Class) "
             "RETURN c.qualified_name AS qualified_name, c.name AS name, c.module AS module, "
             "c.file_path AS file_path, c.external_bases AS external_bases, c.attributes AS attributes, "
-            "collect(p.qualified_name) AS bases", {"b": build_id})
+            "c.language AS language, collect(p.qualified_name) AS bases", {"b": build_id})
         files = self.read(
             "MATCH (f:File {build_id: $b}) RETURN f.path AS path, f.module AS module, f.is_test AS is_test, "
-            "f.namespace_json AS namespace_json", {"b": build_id})
+            "f.namespace_json AS namespace_json, f.language AS language, f.analysis_level AS analysis_level", {"b": build_id})
         calls = self.read(
             "MATCH (a:Function {build_id: $b})-[r:CALLS]->(c:Function) RETURN a.qualified_name AS caller, "
             "c.qualified_name AS callee, r.resolved_by AS resolved_by, r.line AS line", {"b": build_id})

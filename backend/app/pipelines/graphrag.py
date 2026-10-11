@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+from app.config import PRECISE_RESOLVERS
 from app.eval.normalize import clean_item
 from app.pipelines.base import Pipeline, QuestionInput, Retrieval
 from app.pipelines.context import clip, code_chunk
@@ -47,6 +48,15 @@ class GraphRAGPipeline(Pipeline):
         return [r["qualified_name"] for r in rows if r["qualified_name"] != q.meta.get("blank")][:k]
 
     def retrieve(self, q: QuestionInput) -> Retrieval:
+        if q.family == "files" or not self.ctx.index.functions:
+            language = q.meta.get("language") if q.family == "files" else None
+            limit = int(q.meta.get("limit", 10)) if q.family == "files" else 30
+            files = [path for path in sorted(self.ctx.index.files)
+                     if language is None or self.ctx.index.file_languages[path] == language][:limit]
+            edges = [f"{path} -LANGUAGE-> {self.ctx.index.file_languages[path]} "
+                     f"[analysis: {self.ctx.index.analysis_levels[path]}]" for path in files]
+            context = "Observed file inventory (alphabetically ordered paths):\n" + "\n".join(edges)
+            return Retrieval(context, files)
         hops = int(self.ctx.options.get("graphrag_hops", 2))
         max_edges = int(self.ctx.options.get("graphrag_max_edges", 120))
         seeds = self.find_seeds(q)
@@ -67,7 +77,9 @@ class GraphRAGPipeline(Pipeline):
         if seeds:
             parts.append("Symbols: " + ", ".join(seeds[:4]))
         if edges:
-            parts.append("Graph edges (resolved_by: scip/jedi/import are precise, name is a guess):\n" + "\n".join(edges))
+            parts.append("Observed graph edges (resolved_by: " + "/".join(PRECISE_RESOLVERS) +
+                         " are precise static bindings, name is a guess). "
+                         "Missing edges do not prove a relationship cannot occur at runtime:\n" + "\n".join(edges))
         parts += snippets
         context = clip("\n\n".join(parts), MAX_CONTEXT_CHARS)
         # Only what survived truncation was shown to the model; context recall must not count the rest.
@@ -110,7 +122,7 @@ class GraphRAGPipeline(Pipeline):
             if p.get("class_qn"):
                 edges.append(f"{p['class_qn']} -DEFINES-> {seed}")
                 nodes.append(p["class_qn"])
-                siblings = [f"  def {r['sig']}" for r in store.read(
+                siblings = [f"  {r['qn']}: {r['sig']}" for r in store.read(
                     "MATCH (:Class {build_id: $b, qualified_name: $c})-[:DEFINES]->(m:Function) "
                     "RETURN m.qualified_name AS qn, m.signature AS sig ORDER BY m.start_line LIMIT 40",
                     {"b": b, "c": p["class_qn"]}) if r["qn"] != seed]
@@ -125,7 +137,8 @@ class GraphRAGPipeline(Pipeline):
                 edges.append(f"commit:{r['sha']} -MODIFIES-> {seed} [by {r['author']} at {r['at']}{prs}: {r['title']}]")
                 nodes += [r["author"], *[f"#{n}" for n in r["prs"] if n is not None]]
             if seed != blank:
-                snippets.append(code_chunk(seed, p["file_path"], p.get("start_line"), p.get("end_line"), p.get("code")))
+                snippets.append(code_chunk(seed, p["file_path"], p.get("start_line"), p.get("end_line"), p.get("code"),
+                                           p.get("language")))
             else:
                 snippets.append(f"{seed} is the function to write: def {p.get('signature')}")
         else:

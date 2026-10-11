@@ -71,7 +71,8 @@ def repo_name(url: str) -> str:
     return Path(url.rstrip("/")).name.removesuffix(".git") or "repo"
 
 
-def checkout_repo(url: str, commit: str | None, dest: Path, mirrors_dir: Path) -> Checkout:
+def checkout_repo(url: str, commit: str | None, dest: Path, mirrors_dir: Path,
+                  *, history: bool = True) -> Checkout:
     local = Path(url).expanduser()
     if dest.exists():
         shutil.rmtree(dest)
@@ -91,12 +92,33 @@ def checkout_repo(url: str, commit: str | None, dest: Path, mirrors_dir: Path) -
             pass
     else:
         slug = github_slug(url)
+        if not history:
+            return _snapshot_checkout(url, commit, dest, slug)
         mirrors_dir.mkdir(parents=True, exist_ok=True)
         mirror = mirrors_dir / ((slug or repo_name(url)).replace("/", "__") + ".git")
         with _mirror_lock(mirror):
             _sync_mirror(url, mirror)
             return _checkout(str(mirror), commit, dest, slug)
     return _checkout(source, commit, dest, slug)
+
+
+def _snapshot_checkout(url: str, commit: str | None, dest: Path, slug: str | None) -> Checkout:
+    """Fetch only the requested snapshot for exploration, without downloading all branches/history."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            repo = GitRepo.init(dest)
+            repo.create_remote("origin", url)
+            with repo.git.custom_environment(**_HTTP11):
+                repo.git.fetch("--depth=1", "origin", commit or "HEAD", kill_after_timeout=180)
+                repo.git.checkout("--detach", "FETCH_HEAD")
+            return Checkout(dest, repo.head.commit.hexsha, False, slug)
+        except GitCommandError:
+            shutil.rmtree(dest, ignore_errors=True)
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            log.warning("snapshot checkout failed; retrying (%d/%d)", attempt, FETCH_ATTEMPTS)
+            time.sleep(RETRY_WAIT_S * attempt)
+    raise RuntimeError("snapshot checkout failed")
 
 
 @contextmanager

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.eval.claim_check import Verdict, check_explanation
-from app.eval.index import BuildIndex
+from app.eval.index import BuildIndex, codegen_language
 from app.eval.judge import faithfulness
 from app.eval.normalize import normalize_items
 from app.eval.sandbox import SandboxResult, run_tests
@@ -47,6 +47,7 @@ class ScoredAnswer:
     fp: list[str] = field(default_factory=list)
     fn: list[str] = field(default_factory=list)
     invented: list[str] = field(default_factory=list)  # false positives that do not exist in the repo at all
+    notes: list[str] = field(default_factory=list)
 
 
 class Scorer:
@@ -74,7 +75,8 @@ class Scorer:
         if q.family in SYMBOL_FAMILIES and items:
             result.invented = [i for i in s.false_positives if not self.index.is_entity(i)]
             scores["invented_item_rate"] = sum(not self.index.is_entity(i) for i in items) / len(items)
-        elif q.family == "lookup":
+            scores["unrecognized_item_rate"] = scores["invented_item_rate"]
+        elif q.family in ("lookup", "files"):
             result.invented = [i for i in s.false_positives if i not in self.index.files]
         if q.family == "localization":
             scores["hit_at_1"] = hit_at_k(items, q.gold_answer, 1)
@@ -87,28 +89,47 @@ class Scorer:
             scores["context_recall"] = len(retrieved & set(q.gold_answer)) / len(set(q.gold_answer))
 
         if out.explanation:
-            result.verdicts = check_explanation(out.explanation, self.index, self.llm, self.judge_model)
+            try:
+                result.verdicts = check_explanation(out.explanation, self.index, self.llm, self.judge_model)
+            except Exception as exc:  # noqa: BLE001 - an optional judge must not discard deterministic scores
+                result.verdicts = check_explanation(out.explanation, self.index)
+                scores["judge_error"] = 1.0
+                result.notes.append(f"The optional claim extractor failed; rule-based claims were checked. "
+                                    f"{type(exc).__name__}: {str(exc)[:300]}")
             labels = [v.label for v in result.verdicts]
             if labels:
                 supported, contradicted = labels.count("supported"), labels.count("contradicted")
                 scores["claims"] = float(len(labels))
                 scores["contradicted_claim_rate"] = contradicted / len(labels)
+                scores["unverifiable_claim_rate"] = labels.count("unverifiable") / len(labels)
                 if supported + contradicted:
                     scores["claim_precision"] = supported / (supported + contradicted)
-            if self.llm is not None and self.judge_model and out.context:
-                faith = faithfulness(self.llm, self.judge_model, out.context, out.explanation)
-                if faith is not None:
-                    scores["faithfulness"] = faith
+            if self.llm is not None and self.judge_model and out.context and not scores.get("judge_error"):
+                try:
+                    faith = faithfulness(self.llm, self.judge_model, out.context, out.explanation)
+                    if faith is not None:
+                        scores["faithfulness"] = faith
+                except Exception as exc:  # noqa: BLE001
+                    scores["judge_error"] = 1.0
+                    result.notes.append(f"The optional faithfulness judge failed; this metric was not recorded. "
+                                        f"{type(exc).__name__}: {str(exc)[:300]}")
         result.scores = scores
         return result
 
     def _score_code(self, q: QuestionView, out: PipelineOutput, answer_key: str) -> ScoredAnswer:
         code = out.code or ""
         result = ScoredAnswer()
+        original = self.index.functions.get(q.meta.get("blank") or "")
+        language = codegen_language(self.index, q.meta)
+        if language != "python":
+            result.scores = {"unsupported_language": 1.0}
+            result.notes = [f"Code-generation syntax, symbol and test checks currently support Python; "
+                            f"this {language} answer was not evaluated."]
+            result.test_run = SandboxResult("skipped", detail=result.notes[0])
+            return result
         if not code.strip():
             result.scores = {"syntax_ok": 0.0, "hallucinated": 0.0, "no_code": 1.0, "callee_f1": 0.0, "f1": 0.0}
             return result
-        original = self.index.functions.get(q.meta.get("blank") or "")
         check = check_code(code, self.index, q.meta.get("module"), q.meta.get("class_qn"),
                            original.kind if original is not None else None)
         result.symbols = check.uses
@@ -117,6 +138,8 @@ class Scorer:
         callee = set_f1(called, q.gold_answer)
         scores.update({"callee_precision": callee.precision, "callee_recall": callee.recall, "callee_f1": callee.f1,
                        "f1": callee.f1})
+        result.notes = ["Static symbol and callee checks do not establish behavioral correctness. "
+                        "Run the repository's tests to verify behavior."]
         result.items, result.tp, result.fp, result.fn = called, callee.true_positives, callee.false_positives, \
             callee.false_negatives
         if self.run_tests and self.checkout is not None and self.build_id is not None and check.syntax_ok:

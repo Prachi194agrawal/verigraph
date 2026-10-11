@@ -4,4 +4,4 @@ __version__ = "0.1.0"
 
 # Stored on every graph build. Bump it whenever parser or resolver output changes,
 # because frozen question sets are only valid against graphs from the same version.
-PARSER_VERSION = "tree-sitter-python/1"
+PARSER_VERSION = "tree-sitter-multilanguage/2"

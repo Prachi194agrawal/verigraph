@@ -31,7 +31,7 @@ def _dedupe(items: list[str]) -> list[str]:
 def normalize_symbol(item: object, index: BuildIndex, gold: set[str]) -> str:
     s = clean_item(item)
     path, sep, rest = s.partition("::")
-    if path.endswith(".py"):  # pytest node id or "file.py::Class::method"
+    if sep and index.paths_ending_with(path.lstrip("/")):  # "file.py::Class::method" or "file.ts::Class::method"
         module = index.module_for_path(path)
         if module:
             s = module + ("." + rest.replace("::", ".") if sep and rest else "")
@@ -84,7 +84,7 @@ def normalize_history(items: list[object], aliases: dict[str, list[str]]) -> lis
 def normalize_items(family: str, items: list[object], index: BuildIndex, gold: list[str],
                     meta: dict | None = None) -> list[str]:
     gold_set = set(gold)
-    if family == "lookup":
+    if family in ("lookup", "files"):
         return _dedupe([normalize_path(i, index, gold_set) for i in items])
     if family == "history":
         return normalize_history(items, (meta or {}).get("aliases", {}))

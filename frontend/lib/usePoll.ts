@@ -23,11 +23,11 @@ export function usePoll<T>(path: string | null, intervalMs = 3000, keepPolling?:
         if (cancelled) return;
         setData(next);
         setError(null);
-        if (!keep.current || keep.current(next)) timer = setTimeout(load, intervalMs);
+        if (intervalMs > 0 && (!keep.current || keep.current(next))) timer = setTimeout(load, intervalMs);
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : String(e));
-        timer = setTimeout(load, intervalMs * 2);
+        if (intervalMs > 0) timer = setTimeout(load, Math.max(intervalMs * 2, 1000));
       }
     };
     load();

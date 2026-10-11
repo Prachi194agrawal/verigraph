@@ -38,6 +38,15 @@ def test_counts(store, loaded):
     assert counts["edges"]["CALLS"] == 17 and counts["edges"]["INCLUDES"] == 3
 
 
+def test_scoped_agent_query_uses_transaction_timeout_and_build_filter(store, loaded):
+    rows = store.read_scoped(
+        "MATCH (n:Function) RETURN collect(DISTINCT n.build_id) AS builds, count(n) AS functions", BUILD)
+    assert rows == [{"builds": [BUILD], "functions": 20}]
+    with pytest.raises(ValueError, match="Namespaced"):
+        store.read_scoped(
+            "MATCH (n) RETURN apoc.cypher.runFirstColumn('MATCH(m) RETURN m', properties(n), false)", BUILD)
+
+
 def test_gold_answers(store, loaded):
     drafts = generate_questions(store, BUILD, families=["callers", "impact", "inheritance", "history", "lookup"],
                                 per_family=50, seed=3)
@@ -59,7 +68,8 @@ def test_localization_gold_comes_from_the_fixing_pr(store, loaded):
     drafts = generate_questions(store, BUILD, families=["localization"], per_family=5)
     assert len(drafts) == 1
     assert drafts[0].gold_answer == ["minipkg.core.TurboEngine.run"]  # the non-test function PR #15 modified
-    assert "Turbo engine is too slow" in drafts[0].text and drafts[0].meta == {"issue": 3}
+    assert "Turbo engine is too slow" in drafts[0].text and drafts[0].meta["issue"] == 3
+    assert drafts[0].meta["reference_source"] == "static_code_graph"
 
 
 def test_false_premise_and_codegen(store, loaded):

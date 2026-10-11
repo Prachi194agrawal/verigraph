@@ -1,7 +1,7 @@
 """Self-audit of the symbol checker: run it on the repository's own, correct code.
 
-Every symbol the original functions use exists and every call they make is valid, so anything the checker flags
-here is a false positive of the checker (mixins, metaprogramming, dynamic attributes...). The rate is an upper
+The original code is a useful baseline, so checker flags here may reveal false positives (mixins,
+metaprogramming, dynamic attributes...) or errors already present in the source. The rate is an upper
 bound on how often E4's "hallucination" verdicts blame a model for the checker's own blind spots; it is stored
 with each build and shown next to the resolver statistics.
 """
@@ -22,9 +22,12 @@ def symbol_self_audit(store: GraphStore, build_id: int, index: BuildIndex, max_e
         "ORDER BY qn", {"b": build_id})
     by_category: Counter[str] = Counter()
     examples: list[dict] = []
-    flagged = checked = 0
+    flagged = checked = skipped_language = 0
     for r in rows:
         fn = index.functions.get(r["qn"])
+        if fn is None or fn.language != "python":
+            skipped_language += 1
+            continue
         check = check_code(r["code"] or "", index, r["module"], r["class_qn"], fn.kind if fn else None)
         if not check.syntax_ok:  # code over the stored size limit is truncated; it cannot be judged
             continue
@@ -37,5 +40,6 @@ def symbol_self_audit(store: GraphStore, build_id: int, index: BuildIndex, max_e
                 examples.append({"function": r["qn"], "symbol": u.symbol, "category": u.category,
                                  "detail": u.detail, "line": u.line})
     return {"functions_checked": checked, "functions_flagged": flagged,
+            "language": "python", "functions_skipped_other_languages": skipped_language,
             "false_positive_rate": round(flagged / checked, 4) if checked else None,
             "by_category": dict(by_category), "examples": examples}

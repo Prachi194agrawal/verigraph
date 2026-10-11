@@ -24,6 +24,8 @@ def create_experiments(body: ExperimentCreate, background: BackgroundTasks,
     ds = db.get(Dataset, body.dataset_id)
     if ds is None or ds.status != "done":
         raise HTTPException(409, "dataset not found or not finished")
+    if not ds.n_questions:
+        raise HTTPException(409, "This dataset has no questions. Explore the graph or generate a dataset with supported symbols first.")
     unknown = set(body.pipelines) - PIPELINES.keys()
     if unknown:
         raise HTTPException(422, f"unknown pipelines: {sorted(unknown)}")

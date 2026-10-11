@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Call edges resolved by these resolvers may become gold answers. Name-only edges never do.
-PRECISE_RESOLVERS = ("scip", "jedi", "import")
+PRECISE_RESOLVERS = ("scip", "jedi", "import", "static")
 ALL_RESOLVERS = ("scip", "jedi", "import", "name")
 
 
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     scip_python_bin: str = "scip-python"
 
     # Semantic layer
-    embedding_model: str = "nomic-ai/CodeRankEmbed"  # or "hash" for the dependency-free embedder
+    embedding_model: str = "hash"  # neural embeddings are an explicit opt-in
     embedding_batch_size: int = 16
     embedding_dim: int = 768  # must match the model; the Neo4j vector index is created with it
     embedding_max_tokens: int = 512  # longer inputs are truncated; attention cost grows quadratically on CPU
@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     llm_cache: bool = True
     llm_timeout_s: float = 120.0
     llm_num_retries: int = 2
+    default_model: str = "mock/extractive"  # set DEFAULT_MODEL to a model your provider account supports
     # Free tiers allow few requests and tokens per minute. Concurrent calls per provider (the model-name prefix,
     # "groq" for "groq/..."), per process, as "provider=n,..."; unlisted providers are not limited.
     llm_provider_concurrency: str = "groq=2,gemini=2,openrouter=2"

@@ -11,6 +11,7 @@ from pathlib import Path
 from app.config import PRECISE_RESOLVERS
 from app.graph.model import CodeGraph
 from app.graph.modules import assign_module_names, discover_python_files
+from app.graph.multilanguage import append_multilanguage_structure
 from app.graph.parser import PythonParser
 from app.graph.resolver import CallResolver, ImportResolver
 from app.graph.symbols import SymbolTable
@@ -127,10 +128,23 @@ def build_structure(repo_root: Path, repo_name: str, repo_url: str, commit_sha: 
     link_imports(graph, symtab)
     resolver = CallResolver(graph, symtab, repo_root, resolvers, scip_bin)
     call_stats = resolver.run(progress)
+    extra = append_multilanguage_structure(graph, repo_root, progress)
+    for key in ("call_sites", "external", "unresolved", "dynamic"):
+        call_stats[key] = call_stats.get(key, 0) + extra.get(key, 0)
+    call_stats["by_resolver"] = dict(Counter(call_stats.get("by_resolver", {})) + Counter(extra.get("by_resolver", {})))
+    call_stats["resolvers"] = list(dict.fromkeys(call_stats["resolvers"] + extra.get("resolvers", [])))
+    internal = call_stats["call_sites"] - call_stats["external"]
+    call_stats["unresolved_call_rate"] = round((call_stats["unresolved"] + call_stats["dynamic"]) / internal, 4) if internal else 0.0
+    call_stats["name_only_rate"] = round(call_stats["by_resolver"].get("name", 0) / internal, 4) if internal else 0.0
     link_tests(graph)
     for f in graph.files.values():
-        f.namespace = symtab.namespace(f.module)
-    graph.stats = structure_stats(graph, call_stats)
+        if f.language == "python" and f.analysis_level != "file":
+            f.namespace = symtab.namespace(f.module)
+    graph.stats = {**graph.stats, **structure_stats(graph, call_stats)}
+    graph.stats["language_counts"] = graph.stats.get("languages", {})
+    graph.stats["unsupported_files"] = [f.path for f in graph.files.values() if f.analysis_level == "file"]
+    graph.stats["skipped_files"] = graph.stats.get("skipped_source_files", {})
+    graph.stats["warnings"] = graph.stats.get("coverage_warnings", [])
     return graph
 
 

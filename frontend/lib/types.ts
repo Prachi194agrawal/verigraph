@@ -1,5 +1,13 @@
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
+export interface Capabilities {
+  languages: { name: string; extensions: string[]; level: string }[];
+  providers: { name: string; configured: boolean }[];
+  embedding_model: string;
+  default_model: string;
+  notes: string[];
+}
+
 export interface Repo {
   id: number;
   url: string;
@@ -191,6 +199,7 @@ export interface AnswerChecks {
 }
 
 export const FAMILIES = [
+  "files",
   "lookup",
   "callers",
   "impact",
@@ -212,7 +221,23 @@ export const PIPELINE_LABEL: Record<string, string> = {
   cypher_agent: "Cypher agent",
 };
 
+export const FAMILY_LABEL: Record<string, string> = {
+  files: "Files by language",
+  lookup: "Find definitions", callers: "Find callers", impact: "Find affected tests",
+  inheritance: "Class relationships", history: "Code history", localization: "Locate a fix",
+  false_premise: "Reject false assumptions", codegen: "Write code (Python)",
+};
+
+export const PIPELINE_HELP: Record<string, string> = {
+  none: "Answer without retrieved code context.",
+  vector: "Retrieve similar code snippets before answering.",
+  graphrag: "Retrieve code snippets and their graph relationships.",
+  cypher_agent: "Let the model query the knowledge graph before answering.",
+};
+
 export interface AskResult {
+  limitations?: string[];
+  provenance?: { commit_sha: string | null; reference_source: string; model_kind: string; embedding_model: string; languages: unknown };
   question: string;
   model: string;
   pipeline: string;
@@ -222,7 +247,7 @@ export interface AskResult {
   error: string | null;
   claims: { subject: string; relation: string; object: string; verdict: Claim["verdict"]; evidence: string;
             extractor: string; claim_text: string }[];
-  summary: { claims: number; supported: number; contradicted: number; unverifiable: number; invented_items: number };
+  summary: { claims: number; supported: number; contradicted: number; unverifiable: number; unrecognized_items?: number; invented_items?: number };
   context: string;
   retrieved_nodes: string[];
   steps: { cypher: string; rows: number; error: string | null }[];

@@ -1,25 +1,52 @@
 # VeriGraph for Code
 
-Turn a Python repository into a **code knowledge graph**, then use the graph to **test and grade LLMs** on
-that codebase. The graph comes from a parser and static resolvers, not an LLM, so it works as ground truth:
-questions get exact gold answers (from Cypher) and claims get exact checks.
+Turn a mixed-language repository into a **code knowledge graph**, then use the graph to **test and grade LLMs** on
+that codebase. The graph comes from parsers and static resolvers. Cypher provides reproducible reference
+answers about the analyzed snapshot; missing graph relationships can remain unverifiable because static
+analysis does not capture every runtime behavior.
 
-- **Structure** (Tree-sitter + SCIP/Jedi/import resolution): files, classes, functions, imports, calls,
-  inheritance, tests.
+- **Structure**: Python import/inference analysis plus Tree-sitter adapters for common languages; files,
+  classes, functions, imports and conservatively resolved calls. Every file and symbol records its language
+  and analysis level. Unrecognized text sources remain a file inventory, with no fabricated calls.
 - **History** (git + GitHub): commits, authors, PRs and issues, linked to the functions they touched.
 - **Meaning** (LLM, optional): one-line summaries and feature tags; code embeddings for vector search.
 
 The output is a leaderboard of **models × pipelines** (no retrieval, vector RAG, GraphRAG, Cypher agent)
-on your own codebase, where every wrong claim traces back to a missing or different edge in the graph.
+on your own codebase, with reference answers, retrieved evidence, and supported or unverifiable claims.
 
 The graph also answers developers directly:
 
 - **Ask the graph**: a free-form question answered by any pipeline. Every name and claim in the answer is
   checked against the graph.
-- **Change impact**: a diff or a list of functions gives the affected callers and the exact tests to run,
+- **Change impact**: a diff or a list of functions gives observed affected callers and suggested tests,
   with no LLM. It can produce Markdown for a PR comment.
 
 **How it all works, step by step: [architecture.md](architecture.md).**
+
+## Start here: understand a repository before contributing
+
+1. Start the services and open http://localhost:3000.
+2. Paste a GitHub URL, leave the commit blank for the default branch, and choose **Fast** analysis.
+   History, GitHub enrichment, and LLM summaries are optional and off initially.
+3. Open the finished build. Browse suggested functions or files; inspect the source, callers and graph edges.
+4. Use **Change impact** for a function or a diff against the analyzed commit. Run the suggested tests yourself.
+5. For explanations, configure a provider key in `.env` and choose a real supported model in **Ask**.
+6. Evaluation is optional: generate questions, run the same real model with different retrieval pipelines,
+   and inspect each answer against the captured graph. Mock models only check the software workflow.
+
+**What language support means:** Python has its existing import/Jedi/SCIP analysis (Jedi/SCIP are selected
+in Thorough mode). JavaScript, TypeScript/TSX, Java, Go, Rust, C/C++, C#, Ruby, PHP, Kotlin, Swift, Scala,
+Lua and Bash have structural adapters and conservative scope/import resolution. Other detected source,
+configuration and documentation files are inventoried and can be browsed; they do not receive equivalent
+semantic analysis. The dashboard reports each build's actual coverage. Cross-language API calls, unknown
+receiver types, dynamic dispatch, and framework callbacks are not fully modeled. Generated-code checking
+and execution remain Python-only. `/capabilities` lists language levels and provider configuration without
+returning secrets.
+
+Fast mode uses shallow remote snapshots when history is disabled and avoids expensive Python inference.
+Thorough mode trades time for more Python call inference. Build pages show the measured structure time;
+there is no universal build-time guarantee. Hash embeddings are the lightweight default; opt into neural
+embeddings when measuring semantic retrieval.
 
 ## First setup: no API keys needed
 
@@ -31,7 +58,7 @@ Run commands from the folder containing this README and `docker-compose.yml`.
 cp -n .env.example .env
 ```
 
-For a small CPU-only setup, edit `.env` and add these two lines:
+The example configuration already selects a small CPU-only setup:
 
 ```dotenv
 INSTALL_EMBEDDINGS=false
@@ -51,10 +78,19 @@ python3 scripts/demo.py
 Wait until health reports both `database: ok` and `neo4j: ok` before running the demo. The script uses
 the bundled fixture, waits for the actual Celery jobs, generates questions, runs two mock models across
 all four pipelines, checks for answer errors, and prints the leaderboard URL. It uses returned IDs,
-so you can run it more than once. It needs no provider key, model download, or remote repository.
+so you can run it more than once. New runs use versioned v2 multilingual answer prompts. It needs no provider key, model download, or remote repository.
 Building the Docker images for the first time still requires internet access.
 The fixture has no git history, so history/localization questions are absent; it demonstrates the
 structure, retrieval, grading and dashboard flow. Mock scores are a software check, not model findings.
+
+Try the bundled mixed-language example without a remote download:
+
+```bash
+python3 scripts/demo.py --repo /fixtures/mixed_repo
+```
+
+It contains Python, JavaScript, TypeScript, Go and Rust functions and a Dart source file with inventory-only
+coverage. Open the resulting build to see the coverage report and browse each language's source.
 
 Dashboard: http://localhost:3000. API docs: http://localhost:8000/docs. Neo4j browser:
 http://localhost:7474 (user `neo4j`, password from `NEO4J_PASSWORD`).
@@ -200,7 +236,15 @@ make gate-smoke
 Add the repository Actions secret `GROQ_API_KEY` to enable the real provider gate; `.env` is not
 uploaded to GitHub and CI cannot read it. The provider gate skips when this secret is absent.
 
-Verified on 2026-10-10 after the review in [architecture.md section 16](architecture.md#16-review-log-what-was-corrected-and-verified):
+Multilingual validation on 2026-10-11: the backend suite, Ruff, TypeScript check, production frontend
+build and existing offline evaluation gate passed. Live Docker/API/Celery runs completed the bundled
+mixed-language example across all four pipelines and a fresh `Prachi194agrawal/ianvs` snapshot
+(`b7af1863bb5b`) with GraphRAG, without answer errors. The Ianvs build took about 64 seconds overall,
+including 5.8 seconds of parsing/call resolution; this is one machine's measurement with hash embeddings,
+not a performance guarantee. Live browser checks covered source browsing, questions and leaderboard.
+Model calls used mocks; real provider quality and runtime call-graph completeness were not established.
+
+Earlier Python-only validation on 2026-10-10, before the multilingual changes, after the review in [architecture.md section 16](architecture.md#16-review-log-what-was-corrected-and-verified):
 **80 backend tests passed with Neo4j**, Ruff passed, the TypeScript check and frontend production build
 passed, and the offline gate passed. The API/Celery demo completed eight experiments (two mock models ×
 four pipelines) without answer errors, and psf/requests v2.32.3 was built, questioned and scored through

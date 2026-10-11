@@ -13,7 +13,7 @@ const CodeView = dynamic(() => import("@/components/CodeView"), { ssr: false });
 
 
 function Chip({ kind, text, invented = false }: { kind: "tp" | "fp" | "fn"; text: string; invented?: boolean }) {
-  const meta = { tp: ["✓", "correct"], fp: ["✕", invented ? "not in the repo" : "wrong"], fn: ["○", "missed"] }[kind];
+  const meta = { tp: ["✓", "matches reference"], fp: ["✕", invented ? "not found in this graph" : "outside reference"], fn: ["○", "missed reference item"] }[kind];
   return <span className={`chip ${kind}`} title={meta[1]}><span className="icon" aria-hidden>{meta[0]}</span>
     <span className="mono">{text}</span><span className="muted">{meta[1]}</span></span>;
 }
@@ -26,7 +26,7 @@ export default function AnswerPage() {
   if (checks.error) return <p className="error">{checks.error}</p>;
   if (!c) return <p className="muted">Loading…</p>;
   const buildId = c.build_id;
-  const graphLink = (name: string) => (buildId ? `/builds/${buildId}?symbol=${encodeURIComponent(name)}` : "#");
+  const graphLink = (name: string) => (buildId ? `/builds/${buildId}?symbol=${encodeURIComponent(name)}#explore` : "#");
   const isCode = c.question.family === "codegen";
 
   async function label(value: string, claimId: number | null = null) {
@@ -43,17 +43,20 @@ export default function AnswerPage() {
         <Link href={`/experiments/${c.experiment.id}`}>experiment #{c.experiment.id}</Link> · {c.question.family}
         {c.question.hop_count ? ` · ${c.question.hop_count} hop(s)` : ""}
       </p>
+      {c.experiment.model.startsWith("mock/") && <div className="notice"><p>This answer was produced by a demo model. Use a real model to evaluate AI understanding.</p></div>}
 
       <section className="card">
         <h2>Question</h2>
         <p style={{ whiteSpace: "pre-wrap" }}><Inline text={c.question.text} /></p>
-        <h3>Gold answer (from the graph)</h3>
+        <h3>Reference answer from the static graph</h3>
         <div className="chips">
           {c.question.gold_answer.length
-            ? c.question.gold_answer.map((g) => <Link key={g} href={graphLink(g)} className="chip mono">{g}</Link>)
-            : <span className="muted">empty: the premise is false, the model should say so</span>}
+            ? c.question.gold_answer.map((g) => c.question.family === "files" ? <span key={g} className="chip mono">{g}</span>
+              : <Link key={g} href={graphLink(g)} className="chip mono">{g}</Link>)
+            : <span className="muted">Empty reference set{c.question.family === "false_premise" ? ": reject the false assumption" : ""}</span>}
         </div>
-        <details style={{ marginTop: 8 }}><summary>gold Cypher</summary><pre className="mono">{c.question.gold_cypher}</pre></details>
+        <p className="secondary">Reference answers describe captured code relationships at this build&apos;s commit. Missing graph evidence can reflect incomplete static analysis, especially dynamic or cross-language calls.</p>
+        <details style={{ marginTop: 8 }}><summary>Graph query behind the reference</summary><pre className="mono">{c.question.gold_cypher}</pre></details>
       </section>
 
       <section className="card">
@@ -105,6 +108,7 @@ export default function AnswerPage() {
       {c.claims.length > 0 && (
         <section className="card">
           <h2>Claims checked against the graph</h2>
+          <p className="secondary">Supported means captured evidence agrees. Contradicted means the claim conflicts with graph evidence. Unverifiable means the graph cannot decide. These labels apply to extracted claims; they do not verify the whole explanation.</p>
           <div className="table-wrap">
             <table>
               <thead><tr><th>Claim</th><th>Verdict</th><th>Evidence</th><th>Your label</th></tr></thead>

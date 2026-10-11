@@ -28,6 +28,9 @@ def create_repo(body: RepoCreate, db: Session = Depends(get_db)) -> Repo:
     repo = Repo(url=body.url.strip(), name=body.name or repo_name(body.url), commit_sha=body.commit_sha)
     db.add(repo)
     db.flush()
+    # Persist before returning: the client can submit its build immediately, before
+    # FastAPI finishes tearing down the request's database dependency.
+    db.commit()
     return repo
 
 

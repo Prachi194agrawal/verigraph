@@ -1090,8 +1090,9 @@ work). Otherwise set `EMBEDDING_MODEL=hash`.
 
 ## 14. Known limitations
 
-- **Python only.** Tree-sitter would allow other languages, but module naming, the resolvers and the
-  symbol checker are Python-specific.
+- **Language coverage varies.** Python retains import/Jedi/SCIP resolution. Common languages have structural
+  adapters and conservative static links; other sources have file inventory. Code generation checks and
+  sandbox execution remain Python-only. See the current language coverage on the build page.
 - **Resolution depends on the environment.** Jedi sees the installed packages, so the external versus
   unresolved split for third-party calls can differ slightly between machines. Repo-internal gold does
   not change.
@@ -1114,8 +1115,9 @@ work). Otherwise set `EMBEDDING_MODEL=hash`.
   Keep it on localhost or behind an authenticating proxy.
 - **Change impact is as complete as the call graph.** Callers through dynamic dispatch or callbacks are
   missing. Name-matched callers are listed separately, and the Markdown states the unresolved-call rate.
-- **Agent build scoping relies on the prompt.** The agent is told to filter on `$build_id`. A query that
-  forgets the filter can see other builds; that is the agent's mistake, and it shows up in the scores.
+- **Agent query subset.** Model-written queries go through `read_scoped`, which injects the build filter
+  on every matched node and rejects procedures, subqueries, unions and graph patterns outside MATCH.
+  This intentionally supports a smaller Cypher subset than trusted application queries.
 - **The sandbox** needs Docker access in the worker and a repository whose tests run after
   `pip install -e .` plus `requirements*.txt`.
 - **Thresholds start as guesses.** The values in `evals/thresholds.yaml` are starting points; calibrate
@@ -1199,3 +1201,31 @@ In priority order: what turns the platform into findings first, then what extend
    across two releases of the same repository (a stretch goal of the plan).
 9. **More languages** through `scip-typescript` / `scip-go` and a Tree-sitter front end that emits the same
    `CodeGraph`.
+
+
+## 18. Multilingual exploration and the beginner workflow
+
+The current implementation adds `graph/languages.py` for discovery and capability reporting and
+`graph/multilanguage.py` for bounded Tree-sitter adapters. Non-Python modules include their language and
+full source path in the identifier, preventing collisions with Python imports. `static` edges are emitted
+only for unambiguous lexical/file/class bindings or supported explicit imports; global same-name matches,
+unknown receivers and overloads are not silently converted into reference answers. Actual per-build
+languages, analysis levels, skipped files and limitations are recorded in build statistics.
+
+`analysis_mode=fast` defaults to Python import/name resolution and shallow remote checkout when history
+is off. Name edges remain outside graph-reference gold. `analysis_mode=thorough` enables the existing
+Python resolver order for users needing deeper inference. Embeddings default to dependency-free `hash`;
+neural code embeddings require explicitly installing the embeddings extra. Docker package downloads are
+cached with BuildKit mounts and keep the increased timeout/retry configuration.
+
+The dashboard guides users from repository registration to browsing symbols/files and change impact,
+then optional LLM questions and evaluation. `/capabilities` exposes configured provider status without
+keys. This does not verify keys or advertise a guaranteed provider model. `DEFAULT_MODEL` can supply a
+model known to work with the user's account. Mock/real labels and lexical/semantic retrieval distinctions
+remain visible in results. Missing graph facts are reported as unverifiable rather than proof that a
+runtime relationship is impossible. New answer prompts use v2; v1 prompt files remain reproducible.
+
+The files question family evaluates the inventory of source paths by language. It is useful for repositories
+with only file-level coverage, but it is not a semantic benchmark. Structural Q&A uses graph relationships;
+Python code-writing tasks keep their language-specific checks. Scored answers and experiment summaries
+carry limitations and graph provenance. File browsing and `/builds/{id}/files` work even without functions.

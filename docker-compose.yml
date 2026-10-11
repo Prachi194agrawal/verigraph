@@ -82,7 +82,7 @@ services:
     build:
       context: ./backend
       args:
-        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-true}
+        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-false}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     env_file:
@@ -94,6 +94,7 @@ services:
     volumes:
       - app_data:/data
       - ./backend/tests/fixtures/mini_repo:/fixtures/mini_repo:ro
+      - ./backend/tests/fixtures/mixed_repo:/fixtures/mixed_repo:ro
     depends_on: *backend-depends
 
   worker:
@@ -101,7 +102,7 @@ services:
     build:
       context: ./backend
       args:
-        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-true}
+        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-false}
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --concurrency=2
     restart: unless-stopped
     env_file:
@@ -111,6 +112,7 @@ services:
     volumes:
       - app_data:/data
       - ./backend/tests/fixtures/mini_repo:/fixtures/mini_repo:ro
+      - ./backend/tests/fixtures/mixed_repo:/fixtures/mixed_repo:ro
     depends_on: *backend-depends
 
   web:

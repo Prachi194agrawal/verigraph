@@ -105,6 +105,16 @@ h3 { font-size: 13px; font-weight: 650; margin: 16px 0 8px; color: var(--text-se
 }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1; }
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; list-style: none; padding: 0; margin: 0 0 20px; }
+.steps li { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 14px; }
+.steps strong, .steps span { display: block; }
+.steps span { margin-top: 6px; color: var(--text-secondary); }
+.notice { background: var(--surface-2); border-left: 3px solid var(--series-1); border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
+.notice p { margin: 4px 0; }
+.coverage { margin: 12px 0; }
+.section-links { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 12px 0; }
+section[id], div[id] { scroll-margin-top: 72px; }
 .spread { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 
 /* stat tiles */
@@ -184,6 +194,14 @@ textarea { width: 100%; resize: vertical; }
 .graph { width: 100%; height: 520px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-1); }
 .explorer { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 980px) { .explorer { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .steps { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  input[type="text"] { min-width: 0 !important; max-width: 100%; width: 100%; }
+  .field { max-width: 100%; }
+  .row .field { flex: 1 1 240px; }
+  header.top { padding: 10px 14px; gap: 12px; flex-wrap: wrap; }
+}
 .search-results { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
 .search-results button {
   display: block; width: 100%; text-align: left; background: transparent; color: var(--text-primary);

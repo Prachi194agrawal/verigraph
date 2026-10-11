@@ -6,7 +6,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 
-from app.eval.index import BuildIndex
+from app.eval.index import BuildIndex, codegen_language
 from app.graph.store import GraphStore
 from app.llm.client import LLMClient
 from app.llm.prompts import render
@@ -34,7 +34,7 @@ class PipelineContext:
     build_id: int
     repo_name: str
     commit_sha: str | None
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
     embedding_model: str | None = None
     options: dict = field(default_factory=dict)
 
@@ -85,6 +85,11 @@ class Pipeline:
     def answer(self, q: QuestionInput, model: str) -> PipelineOutput:
         tracer = self.ctx.llm.tracer
         out = PipelineOutput(trace_id=tracer.new_trace_id())
+        if q.family == "codegen":
+            language = codegen_language(self.ctx.index, q.meta)
+            if language != "python":
+                out.error = f"Code-generation checks currently support Python; {language} tasks are not supported."
+                return out
         started = time.perf_counter()
         try:
             retrieval = self.retrieve(q)

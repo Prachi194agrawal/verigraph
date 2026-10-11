@@ -48,6 +48,8 @@ def main() -> int:
     parser.add_argument("--models", default="mock/extractive,mock/empty")
     parser.add_argument("--embedding-model", default="hash")
     parser.add_argument("--semantic-model", default=None)
+    parser.add_argument("--analysis-mode", choices=("fast", "thorough"), default="fast",
+                        help="fast uses lightweight static resolution; thorough enables Python inference")
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--github", action="store_true")
     parser.add_argument("--per-family", type=int, default=5)
@@ -73,14 +75,20 @@ def main() -> int:
         build = request(args.api, f"/repos/{repo['id']}/builds", {
             "history": args.history, "github": args.github, "max_commits": 100,
             "embedding_model": args.embedding_model, "semantic_model": args.semantic_model,
-            "semantic_limit": 20,
+            "semantic_limit": 20, "analysis_mode": args.analysis_mode,
         })
-        wait(args.api, f"/builds/{build['id']}", args.timeout)
+        build = wait(args.api, f"/builds/{build['id']}", args.timeout)
+        stats = build.get("stats") or {}
+        languages = stats.get("language_counts") or stats.get("languages") or {}
+        if languages:
+            print("Indexed files by language: " + ", ".join(f"{name}: {count}" for name, count in sorted(languages.items())))
+        for warning in stats.get("warnings", []):
+            print(f"  Coverage: {warning}", flush=True)
         print("Step 4: generate exact-answer questions", flush=True)
         dataset = request(args.api, "/datasets", {"build_id": build["id"], "per_family": args.per_family})
         dataset = wait(args.api, f"/datasets/{dataset['id']}", args.timeout)
         if not dataset["n_questions"]:
-            raise RuntimeError("No eligible questions were generated; use a repository with functions and tests.")
+            raise RuntimeError("No eligible questions were generated. Open the build to inspect its files and language coverage.")
         print(f"Steps 5–6: answer and score {len(models)} model(s) × {len(pipelines)} pipeline(s)", flush=True)
         experiments = request(args.api, "/experiments", {
             "dataset_id": dataset["id"], "models": models, "pipelines": pipelines, "concurrency": 2,

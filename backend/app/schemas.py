@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -36,8 +37,9 @@ class RepoOut(_Out):
 class BuildCreate(BaseModel):
     commit_sha: str | None = None
     resolvers: list[str] | None = Field(None, description="Order of call resolvers, e.g. [jedi, import, name]")
-    history: bool = True
-    github: bool = True
+    analysis_mode: Literal["fast", "thorough"] = "fast"
+    history: bool = False
+    github: bool = False
     max_commits: int | None = Field(None, ge=1)
     embeddings: bool = True
     embedding_model: str | None = None
@@ -112,7 +114,7 @@ class ExperimentCreate(BaseModel):
     dataset_id: int
     models: list[str] = Field(min_length=1, description='LiteLLM model names, e.g. "groq/llama-3.1-8b-instant"')
     pipelines: list[str] = Field(default=["none", "vector", "graphrag", "cypher_agent"], min_length=1)
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
     judge_model: str | None = None
     limit: int | None = Field(None, ge=1)
     families: list[str] | None = None
@@ -161,7 +163,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=8000)
     model: str = Field(min_length=1, description='LiteLLM model name, e.g. "groq/llama-3.1-8b-instant"')
     pipeline: str = "graphrag"
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
     judge_model: str | None = Field(None, description="optional LLM claim extractor, in addition to the rules")
     options: dict = Field(default_factory=dict, description="top_k, graphrag_hops, agent_max_queries, ...")
 

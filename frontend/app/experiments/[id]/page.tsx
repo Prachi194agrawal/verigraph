@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import StatusBadge from "@/components/StatusBadge";
 import { fmt, pct, post } from "@/lib/api";
-import { type AnswerRow, type Experiment, PIPELINE_LABEL, type Summary } from "@/lib/types";
+import { type AnswerRow, type Experiment, FAMILY_LABEL, PIPELINE_LABEL, type Summary } from "@/lib/types";
 import { isActive, usePoll } from "@/lib/usePoll";
 
 interface Results {
@@ -48,6 +48,8 @@ export default function ExperimentPage() {
         </div>
         {r && <StatusBadge status={r.experiment.status} progress={r.experiment.progress} />}
       </div>
+      {res.error && <p className="error">{res.error}</p>}
+      {r?.experiment.model.startsWith("mock/") && <div className="notice"><p>This experiment uses a demo model. Its results verify the pipeline; they do not establish real AI performance.</p></div>}
       {r?.experiment.status === "failed" && (
         <section className="card">
           <div className="spread">
@@ -78,7 +80,7 @@ export default function ExperimentPage() {
           <div className="tile"><div className="label">Mean F1</div><div className="value">{fmt(r.summary.f1)}</div>
             <div className="note">95% CI {fmt(r.summary.f1_ci?.[0], 2)}–{fmt(r.summary.f1_ci?.[1], 2)}</div></div>
           <div className="tile"><div className="label">Context recall</div><div className="value">{fmt(r.summary.context_recall)}</div>
-            <div className="note">gold items the retrieval showed</div></div>
+            <div className="note">reference items shown in retrieved context</div></div>
           <div className="tile"><div className="label">Contradicted claims</div><div className="value">{pct(r.summary.contradicted_claim_rate)}</div>
             <div className="note">of extracted claims</div></div>
           <div className="tile"><div className="label">Answers</div><div className="value">{r.summary.n}</div>
@@ -91,12 +93,13 @@ export default function ExperimentPage() {
         </div>
       )}
       <section className="card">
+        <p className="secondary">Open an answer to compare returned items with the graph reference and inspect the evidence. Precision measures correct returned items; recall measures expected items found. The graph&apos;s coverage limits both.</p>
         <div className="spread">
           <h2>Per-question scores</h2>
           <label className="field">Family
             <select value={family} onChange={(e) => setFamily(e.target.value)}>
               <option value="">all</option>
-              {families.map((f) => <option key={f} value={f}>{f}</option>)}
+              {families.map((f) => <option key={f} value={f}>{FAMILY_LABEL[f] ?? f}</option>)}
             </select>
           </label>
         </div>
@@ -109,7 +112,7 @@ export default function ExperimentPage() {
               {answers.map((a) => (
                 <tr key={a.answer_id} className="clickable" onClick={() => router.push(`/answers/${a.answer_id}`)}>
                   <td><Link href={`/answers/${a.answer_id}`}>#{a.answer_id}</Link></td>
-                  <td>{a.family}</td>
+                  <td>{FAMILY_LABEL[a.family] ?? a.family}</td>
                   <td className="num">{a.hop_count ?? "–"}</td>
                   <td className="num"><strong>{fmt(a.scores.f1 ?? a.scores.callee_f1)}</strong></td>
                   <td className="num">{fmt(a.scores.precision)}</td>

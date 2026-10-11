@@ -14,6 +14,22 @@ from app.models import Answer, Base, ClaimVerdict, Dataset, Experiment, GraphBui
 from app.schemas import BuildCreate, DatasetCreate, ExperimentCreate, LabelCreate, RepoCreate
 
 
+def test_registered_repo_visible_before_request_cleanup(tmp_path):
+    from app.api.repos import create_repo, get_repo
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'registration.db'}")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as registration:
+            repo = create_repo(RepoCreate(url="https://github.com/psf/requests"), registration)
+            # A following request has its own connection while the first session
+            # is still open and its dependency cleanup has not yet run.
+            with Session(engine) as next_request:
+                assert get_repo(repo.id, next_request).url == repo.url
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize("schema,payload", [
     (RepoCreate, {"url": "  "}),
     (BuildCreate, {"resolvers": ["unknown"]}),

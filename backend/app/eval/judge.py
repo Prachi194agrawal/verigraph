@@ -22,7 +22,7 @@ def faithfulness(llm: LLMClient, judge_model: str, context: str, explanation: st
     statements = data.get("statements") if isinstance(data, dict) else None
     if not statements:
         return None
-    flags = [bool(s.get("supported")) for s in statements if isinstance(s, dict)]
+    flags = [s["supported"] for s in statements if isinstance(s, dict) and isinstance(s.get("supported"), bool)]
     return sum(flags) / len(flags) if flags else None
 
 

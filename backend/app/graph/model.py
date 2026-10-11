@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 
 # Higher is more precise. Edge properties keep the best resolver that produced the edge.
-RESOLVER_RANK = {"scip": 4, "jedi": 3, "import": 2, "name": 1}
+RESOLVER_RANK = {"scip": 4, "jedi": 3, "import": 2, "static": 2, "name": 1}
 
 
 @dataclass
@@ -88,6 +88,7 @@ class FunctionDef:
     assigned_calls: dict[str, list[str]] = field(default_factory=dict)  # x = Foo(...) -> {"x": ["Foo"]}
     return_exprs: list[str] = field(default_factory=list)  # callee of each `return Foo(...)`; "?" if unknown
     returns: str | None = None  # class it always returns an instance of, when inferable
+    language: str = "python"
 
     @property
     def is_method(self) -> bool:
@@ -110,6 +111,7 @@ class ClassDef:
     is_test: bool = False
     methods: dict[str, str] = field(default_factory=dict)  # name -> function qualified name
     attributes: set[str] = field(default_factory=set)  # class-level and self.<name> assignments
+    language: str = "python"
 
 
 @dataclass
@@ -125,6 +127,8 @@ class FileRecord:
     top_level: dict[str, tuple[str, str]] = field(default_factory=dict)  # name -> (kind, qualified name)
     module_assignments: set[str] = field(default_factory=set)
     namespace: dict[str, list[str]] = field(default_factory=dict)  # resolved top-level bindings
+    language: str = "python"
+    analysis_level: str = "semantic"  # semantic (Python) | structural | file
 
 
 @dataclass

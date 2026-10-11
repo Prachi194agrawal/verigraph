@@ -4,9 +4,9 @@
    model is configured.
 2. Resolve subject/object to graph entities and label each claim:
    - supported     a precise edge/path proves it
-   - contradicted  both entities exist, the relation is covered by the graph, and no edge exists
+   - contradicted  an explicit stored fact conflicts with the claim (such as a wrong file or denial of a call)
    - unverifiable  unknown entity, only a name-matched edge, or the subject has an unresolved call that
-                   could be the claimed one (the graph cannot rule it out)
+                   could be the claimed one, or a missing edge/path (static coverage is incomplete)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ RELATIONS = ("calls", "not_calls", "inherits", "defined_in", "tests", "modified_
 
 _SYM = r"`[^`\n]+`|[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+(?:\(\))?|[A-Za-z_]\w*\(\)"
 _SYMS = rf"(?:{_SYM})(?:\s*(?:,|,?\s+and|,?\s+or)\s+(?:{_SYM}))*"
-_PATH = r"`?[\w./-]+\.py`?"
+_PATH = r"`?[\w./-]+\.[A-Za-z0-9]+`?"
 _RULES: list[tuple[str, re.Pattern]] = [
     ("not_calls", re.compile(rf"(?P<a>{_SYM})\s+(?:does\s+not|doesn't|never|do\s+not|cannot)\s+(?:directly\s+)?"
                              rf"(?:call|invoke|use)s?\s+(?P<b>{_SYMS})", re.IGNORECASE)),
@@ -92,7 +92,7 @@ def extract_claims_llm(text: str, llm: LLMClient, model: str) -> list[Claim]:
     out = []
     for c in (data or {}).get("claims", []) if isinstance(data, dict) else []:
         if isinstance(c, dict) and c.get("relation") in RELATIONS and c.get("subject") and c.get("object"):
-            out.append(Claim(str(c["subject"]), c["relation"], str(c["object"]), extractor="llm"))
+            out.append(Claim(str(c["subject"]), c["relation"], str(c["object"]), text=text, extractor="llm"))
     return out
 
 
@@ -130,14 +130,14 @@ def check_claim(claim: Claim, index: BuildIndex) -> Verdict:
                 return verdict("unverifiable", f"only a name-matched CALLS edge {a} -> {b}")
             if possible:
                 return verdict("unverifiable", f"{a} has an unresolved call named {index.functions[b].name}")
-            unresolved = index.functions[a].unresolved_calls
-            note = f"; {a} also has unresolved calls: {', '.join(unresolved[:5])}" if unresolved else ""
-            return verdict("contradicted", f"no CALLS edge from {a} to {b}{note}")
+            return verdict("unverifiable", f"no observed CALLS edge from {a} to {b}; "
+                           "static analysis cannot rule out dynamic dispatch or unrecorded calls at runtime")
         if precise:
             return verdict("contradicted", f"({a})-[:CALLS {{resolved_by: {by}}}]->({b}) exists")
         if by == "name" or possible:
             return verdict("unverifiable", f"the graph cannot rule out {a} -> {b}")
-        return verdict("supported", f"no CALLS edge from {a} to {b}")
+        return verdict("unverifiable", f"no observed CALLS edge from {a} to {b}; "
+                       "the graph does not prove absence at runtime")
 
     if rel == "inherits":
         a, b = _cls(index, claim.subject), _cls(index, claim.object)
@@ -148,7 +148,8 @@ def check_claim(claim: Claim, index: BuildIndex) -> Verdict:
             return verdict("supported", f"({a})-[:INHERITS*]->({b})")
         if found == "name":
             return verdict("unverifiable", f"only name-matched INHERITS edges connect {a} to {b}")
-        return verdict("contradicted", f"no INHERITS path from {a} to {b}")
+        return verdict("unverifiable", f"no observed INHERITS path from {a} to {b}; "
+                       "external bases or incomplete resolution may hide a relationship")
 
     if rel == "defined_in":
         qn = normalize_symbol(claim.subject, index, set())
@@ -167,16 +168,22 @@ def check_claim(claim: Claim, index: BuildIndex) -> Verdict:
         hops = index.reaches(t, f, 3)
         if hops:
             return verdict("supported", f"({t})-[:CALLS*{hops}]->({f})")
-        return verdict("contradicted", f"no precise CALLS path of <= 3 hops from {t} to {f}")
+        return verdict("unverifiable", f"no observed precise CALLS path of <= 3 hops from {t} to {f}; "
+                       "the test may exercise it through fixtures, dynamic calls, or a longer path")
 
     if rel == "modified_by":
         f = _fn(index, claim.subject)
         if f is None or f not in index.modified_by:
             return verdict("unverifiable", "no history for this function in the graph")
+        if re.search(r"\bwas\s+(?:last|most\s+recently)\s+(?:changed|modified|updated|edited)\b",
+                     claim.text, re.IGNORECASE):
+            return verdict("unverifiable", "this claim requires ordered commit history; "
+                           "the author index records who changed the function, not who changed it last")
         who = clean_item(claim.object).lower()
         if who in index.modified_by[f]:
             return verdict("supported", f"(:Author {{name: {claim.object}}})-[:AUTHORED]->(:Commit)-[:MODIFIES]->({f})")
-        return verdict("contradicted", f"{f} was modified by {sorted(index.modified_by[f])[:5]}")
+        return verdict("unverifiable", f"{claim.object} is not among the recorded authors for {f}; "
+                       "history limits and renamed functions may omit earlier modifications")
 
     return verdict("unverifiable", f"relation {rel!r} is not covered by the graph")
 

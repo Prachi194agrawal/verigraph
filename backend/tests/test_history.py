@@ -31,6 +31,18 @@ def test_checkout_pins_a_commit(history_repo, tmp_path):
     assert "# turbo" not in (first.path / "src/minipkg/core.py").read_text()
 
 
+def test_fast_checkout_fetches_pinned_snapshot_without_full_history(history_repo, tmp_path):
+    from git import Repo as GitRepo
+
+    base = GitRepo(history_repo).commit("HEAD~1").hexsha
+    checkout = checkout_repo(f"file://{history_repo}", base, tmp_path / "snapshot", tmp_path / "m", history=False)
+    assert checkout.commit_sha == base
+    assert not checkout.has_history
+    assert len(list(GitRepo(checkout.path).iter_commits())) == 1
+    assert (checkout.path / ".git" / "shallow").exists()
+    assert not (tmp_path / "m").exists()
+
+
 def test_builds_of_one_repository_take_turns_on_its_mirror(history_repo, tmp_path):
     """A second build of a repository waits for the first, instead of updating a mirror that is still being
     written (or that the first deletes after a failed clone)."""

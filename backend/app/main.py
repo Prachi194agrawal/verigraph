@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -36,6 +37,28 @@ app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in get_setting
                    allow_methods=["*"], allow_headers=["*"])
 for module in (repos, builds, datasets, experiments, results):
     app.include_router(module.router)
+
+
+@app.get("/capabilities", tags=["meta"])
+def capabilities() -> dict:
+    """Public configuration hints. API keys and credentials are never returned."""
+    from app.graph.languages import LANGUAGE_SPECS
+
+    settings = get_settings()
+    providers = [{"name": provider, "configured": bool(os.environ.get(key, "").strip())}
+                 for provider, key in (("Groq", "GROQ_API_KEY"), ("Gemini", "GEMINI_API_KEY"),
+                                       ("OpenAI", "OPENAI_API_KEY"), ("Anthropic", "ANTHROPIC_API_KEY"))]
+    return {"languages": [{"name": spec.name, "extensions": list(spec.extensions),
+                           "level": "Python import/inference analysis" if spec.name == "python"
+                           else "File inventory only" if spec.level == "file"
+                           else "Syntax extraction and conservative static calls"}
+                          for spec in LANGUAGE_SPECS],
+            "providers": providers, "embedding_model": settings.embedding_model,
+            "default_model": settings.default_model,
+            "notes": ["Provider status means a key is configured, not that its validity has been verified.",
+                      "Mock models verify the workflow. Choose a real model for AI evaluations.",
+                      "Unknown source languages are inventoried without invented call relationships.",
+                      "Cross-language API calls and dynamic dispatch are not inferred."]}
 
 
 @app.get("/health", tags=["meta"])

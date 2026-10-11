@@ -4,7 +4,8 @@
 - a gold query: the exact answer, run per target and stored with the question (`gold_cypher`),
 - a text template.
 
-Gold queries only follow precise edges (resolved_by scip/jedi/import), never name-matched ones.
+Gold queries only follow precise static bindings, never name-matched ones. Answers describe the
+observed graph at a pinned commit; they do not promise complete runtime coverage.
 """
 
 from __future__ import annotations
@@ -74,6 +75,33 @@ RETURN DISTINCT f.path AS gold"""
         return [Draft(self.name, text, self.GOLD.strip(), params, gold, 1, seed["name"], {"kind": kind})]
 
 
+class Files(Family):
+    """Bounded, exact file inventory questions work even when a language has no symbol adapter."""
+
+    name = "files"
+    MAX_FILES = 10
+    SEED = """
+MATCH (f:File {build_id: $build_id})
+WHERE f.language IS NOT NULL
+RETURN DISTINCT f.language AS language ORDER BY language"""
+    GOLD = """
+MATCH (f:File {build_id: $build_id, language: $language})
+RETURN f.path AS gold ORDER BY gold LIMIT $limit"""
+
+    def seeds(self, store, build_id):
+        return store.read(self.SEED, self._params(build_id))
+
+    def make(self, store, build_id, seed, rng):
+        language = seed["language"]
+        params = self._params(build_id, language=language, limit=self.MAX_FILES)
+        gold = [r["gold"] for r in store.read(self.GOLD, params)]
+        text = (f"According to this build's file inventory, list the first {self.MAX_FILES} repository-relative "
+                f"paths indexed as `{language}` files, ordered alphabetically. "
+                f"If fewer than {self.MAX_FILES} were indexed, list all of them.")
+        return [Draft(self.name, text, self.GOLD.strip(), params, gold, None, language,
+                      {"language": language, "limit": self.MAX_FILES, "coverage": "file_inventory"})]
+
+
 class Callers(Family):
     name = "callers"
     SEED = """
@@ -93,7 +121,8 @@ RETURN DISTINCT caller.qualified_name AS gold"""
         params = self._params(build_id, qn=seed["qn"])
         gold = [r["gold"] for r in store.read(self.GOLD, params)]
         name = display(seed["qn"], seed["module"])
-        text = f"Which non-test functions call `{name}` (defined in `{seed['file']}`) directly?"
+        text = (f"According to the precise call edges in the analyzed graph, which non-test functions "
+                f"call `{name}` (defined in `{seed['file']}`) directly?")
         return [Draft(self.name, text, self.GOLD.strip(), params, gold, 1, seed["qn"])]
 
 
@@ -126,8 +155,10 @@ RETURN t.qualified_name AS gold, min(length(p)) AS hops"""
             needs_k = any(r["hops"] == k for r in rows)  # otherwise identical to the (k-1)-hop question
             if not gold or not needs_k:
                 continue
-            text = (f"If `{name}` (in `{seed['file']}`) changes, which test functions could fail? "
-                    f"Count a test if it calls `{name}` directly{self.SUFFIX[k]}.")
+            text = (f"According to the precise call edges in the analyzed graph, which test functions "
+                    f"reach `{name}` (in `{seed['file']}`) within {k} call hops? "
+                    f"Count a test if it calls `{name}` directly{self.SUFFIX[k]}. "
+                    "This is a list of potential impact, not a prediction that those tests will fail.")
             drafts.append(Draft(self.name, text, (self.GOLD % k).strip(), params, gold, k, seed["qn"]))
         return drafts
 
@@ -150,7 +181,8 @@ RETURN c.qualified_name AS gold, min(length(p)) AS hops"""
         params = self._params(build_id, qn=seed["qn"])
         rows = store.read(self.GOLD, params)
         name = display(seed["qn"], seed["module"])
-        text = f"Which classes in this repository inherit from `{name}` (in `{seed['file']}`), directly or indirectly?"
+        text = (f"According to the precise inheritance edges in the analyzed graph, which classes "
+                f"inherit from `{name}` (in `{seed['file']}`), directly or indirectly?")
         hops = max((r["hops"] for r in rows), default=None)
         return [Draft(self.name, text, self.GOLD.strip(), params, sorted(r["gold"] for r in rows), hops, seed["qn"])]
 
@@ -186,10 +218,10 @@ ORDER BY c.committed_at DESC, c.order ASC LIMIT 2"""
         prs = [n for n in last["prs"] or [] if n is not None]
         if len(prs) == 1:  # a commit in several PRs would make "which pull request" ambiguous: ask only who
             gold.append(f"#{prs[0]}")
-            text = (f"Who last changed `{name}` (in `{seed['file']}`), and in which pull request? "
+            text = (f"In the recorded history, who last changed `{name}` (in `{seed['file']}`), and in which pull request? "
                     "Answer with the author's name and the PR number.")
         else:
-            text = f"Who last changed `{name}` (in `{seed['file']}`)? Answer with the author's name."
+            text = f"In the recorded history, who last changed `{name}` (in `{seed['file']}`)? Answer with the author's name."
         return [Draft(self.name, text, self.GOLD.strip(), params, gold, None, seed["qn"],
                       {"aliases": {last["author"]: aliases}, "sha": last["sha"]})]
 
@@ -277,8 +309,9 @@ RETURN EXISTS { MATCH (a)-[:CALLS*1..3]->(b) } AS reaches,
                 return []
             gold = [a["qn"], b["qn"]]
         an, bn = display(a["qn"], a["module"]), display(b["qn"], b["module"])
-        text = (f"Why does `{an}` call `{bn}` (both in `{a['file']}`)? "
-                f"Answer with the call chain from `{an}` to `{bn}` as fully-qualified names.")
+        text = (f"In the analyzed graph, why does `{an}` call `{bn}` (both in `{a['file']}`)? "
+                f"Answer with the observed call chain from `{an}` to `{bn}` as fully-qualified names. "
+                "Return an empty list if no such chain is recorded; graph absence does not prove runtime absence.")
         return [Draft(self.name, text, self.GOLD.strip(), params, gold, None, a["qn"],
                       {"premise": seed["kind"] == "true", "b": b["qn"]})]
 
@@ -291,6 +324,7 @@ class Codegen(Family):
     SEED = """
 MATCH (f:Function {build_id: $build_id})-[r:CALLS]->(g:Function)
 WHERE NOT f.in_test_file AND NOT f.is_nested AND r.resolved_by IN $precise AND f.kind <> 'property'
+  AND coalesce(f.language, 'python') = 'python' AND f.file_path ENDS WITH '.py'
   AND f.end_line - f.def_line >= 2 AND f.end_line - f.def_line <= 40 AND NOT f.name STARTS WITH '__'
 WITH f, collect(DISTINCT g.qualified_name) AS callees WHERE size(callees) <= 10
 RETURN f.qualified_name AS qn, f.module AS module, f.file_path AS file, f.signature AS signature,
@@ -323,13 +357,13 @@ RETURN DISTINCT t.pytest_id AS id ORDER BY id LIMIT 25"""
         if seed["docstring"]:
             lines += ["Docstring:", '"""', seed["docstring"], '"""']
         lines.append("Write the complete function.")
-        meta = {"module": seed["module"], "file": seed["file"], "class_qn": seed["class_qn"],
+        meta = {"language": "python", "module": seed["module"], "file": seed["file"], "class_qn": seed["class_qn"],
                 "signature": seed["signature"], "start_line": seed["start_line"], "def_line": seed["def_line"],
                 "end_line": seed["end_line"],
                 "tests": tests, "blank": seed["qn"]}
         return [Draft(self.name, "\n".join(lines), self.GOLD.strip(), params, gold, None, seed["qn"], meta)]
 
 
-FAMILIES: dict[str, Family] = {f.name: f for f in (Lookup(), Callers(), Impact(), Inheritance(), History(),
+FAMILIES: dict[str, Family] = {f.name: f for f in (Lookup(), Files(), Callers(), Impact(), Inheritance(), History(),
                                                    Localization(), FalsePremise(), Codegen())}
 QA_FAMILIES = [n for n in FAMILIES if n != "codegen"]

@@ -49,6 +49,10 @@ def generate_questions(store: GraphStore, build_id: int, *, families: list[str],
                         continue
                     premise[is_true] += 1
                 drafts.append(d)
+        for d in drafts:
+            d.meta["reference_source"] = "static_code_graph"
+            d.meta.setdefault("coverage", "observed_precise_edges" if name in {
+                "callers", "impact", "inheritance", "false_premise", "codegen"} else "recorded_graph_facts")
         out.extend(drafts)
 
     if rephrase_model and llm is not None:

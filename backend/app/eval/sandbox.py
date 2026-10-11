@@ -66,6 +66,8 @@ def _ensure_image(checkout: Path, build_id: int, settings: Settings) -> str:
 
 
 def run_tests(checkout: Path, build_id: int, meta: dict, code: str, log_name: str, settings: Settings) -> SandboxResult:
+    if meta.get("language", "python") != "python" or not str(meta.get("file", "")).endswith((".py", ".pyi")):
+        return SandboxResult("skipped", detail="Generated-code execution currently supports Python files only")
     tests = meta.get("tests") or []
     if not tests:
         return SandboxResult("skipped", detail="no tests reach this function")

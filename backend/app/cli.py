@@ -79,14 +79,14 @@ def init_db_cmd() -> None:
 @app.command()
 def build(url: str, commit: str = typer.Option(None, help="commit, tag or branch to pin"),
           resolvers: str = typer.Option(None, help="e.g. jedi,import,name (default from RESOLVERS)"),
-          history: bool = True, github: bool = True, max_commits: int = typer.Option(None),
+          history: bool = False, github: bool = False, max_commits: int = typer.Option(None),
           embeddings: bool = True, embedding_model: str = typer.Option(None),
           semantic_model: str = typer.Option(None, help="LLM for summaries and feature tags (skipped if unset)"),
-          semantic_limit: int = typer.Option(None), verbose: bool = typer.Option(True)) -> None:
+          semantic_limit: int = typer.Option(None), analysis_mode: str = "fast", verbose: bool = typer.Option(True)) -> None:
     """Steps 1-3: check out, parse, resolve, mine history, add meaning; write the graph to Neo4j."""
     _setup(verbose)
     options = {"commit_sha": commit, "resolvers": _csv(resolvers), "history": history, "github": github,
-               "max_commits": max_commits, "embeddings": embeddings, "embedding_model": embedding_model,
+               "analysis_mode": analysis_mode, "max_commits": max_commits, "embeddings": embeddings, "embedding_model": embedding_model,
                "semantic_model": semantic_model, "semantic_limit": semantic_limit}
     with session_scope() as db:
         repo = Repo(url=url, name=repo_name(url), commit_sha=commit)
@@ -249,7 +249,7 @@ def _run_experiments(dataset_id: int, models: list[str], pipelines: list[str], p
 
 @app.command()
 def run(dataset_id: int, models: str = typer.Option(..., help="comma-separated LiteLLM model names"),
-        pipelines: str = "none,vector,graphrag,cypher_agent", prompt_version: str = "v1",
+        pipelines: str = "none,vector,graphrag,cypher_agent", prompt_version: str = "v2",
         judge_model: str = typer.Option(None), limit: int = typer.Option(None), families: str = typer.Option(None),
         concurrency: int = 4, run_tests: bool = False, top_k: int = 8, graphrag_hops: int = 2) -> None:
     """Steps 5-6: answer every question with each model x pipeline and score the answers."""

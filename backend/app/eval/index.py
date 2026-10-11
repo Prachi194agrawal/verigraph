@@ -12,6 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from app.config import PRECISE_RESOLVERS
+from app.graph.languages import detect_language
 from app.graph.model import CodeGraph, Param
 from app.graph.modules import resolve_relative
 from app.graph.store import GraphStore
@@ -34,6 +35,7 @@ class FnInfo:
     start_line: int | None = None
     end_line: int | None = None
     pytest_id: str | None = None
+    language: str = "python"
 
 
 class BuildIndex(ClassHierarchy):
@@ -46,7 +48,7 @@ class BuildIndex(ClassHierarchy):
             fn = FnInfo(r["qualified_name"], r["name"], r["module"], r["file_path"], r.get("class_qn"), params,
                         r.get("kind") or "function", bool(r.get("is_test")), bool(r.get("is_nested")),
                         list(r.get("unresolved_calls") or []), r.get("returns"), r.get("start_line"),
-                        r.get("end_line"), r.get("pytest_id"))
+                        r.get("end_line"), r.get("pytest_id"), r.get("language") or _language(r["file_path"]))
             self.functions[fn.qualified_name] = fn
             if fn.class_qn:
                 self._methods[fn.class_qn].setdefault(fn.name, fn.qualified_name)
@@ -56,6 +58,10 @@ class BuildIndex(ClassHierarchy):
             self._external_bases[r["qualified_name"]] = list(r.get("external_bases") or [])
             self._attributes[r["qualified_name"]] = set(r.get("attributes") or [])
         self.files: dict[str, str] = {r["path"]: r["module"] for r in files}
+        self.file_languages = {r["path"]: r.get("language") or _language(r["path"]) for r in files}
+        self.analysis_levels = {r["path"]: r.get("analysis_level") or
+                               ("semantic" if self.file_languages[r["path"]] == "python" else "structural")
+                               for r in files}
         self.test_files = {r["path"] for r in files if r.get("is_test")}
         self.modules: dict[str, str] = {r["module"]: r["path"] for r in files}
         self.namespaces: dict[str, dict[str, list[str]]] = {
@@ -241,6 +247,7 @@ def index_rows_from_graph(g: CodeGraph) -> dict[str, list[dict]]:
         "is_test": f.is_test, "is_nested": f.is_nested, "start_line": f.start_line, "end_line": f.end_line,
         "unresolved_calls": sorted(set(g.unresolved.get(f.qualified_name, []))), "returns": f.returns,
         "pytest_id": f.pytest_id,
+        "language": f.language,
     } for f in g.functions.values()]
     parents: dict[str, list[str]] = defaultdict(list)
     for child, parent in g.inherits:
@@ -249,8 +256,10 @@ def index_rows_from_graph(g: CodeGraph) -> dict[str, list[dict]]:
         "qualified_name": c.qualified_name, "name": c.name, "module": c.module, "file_path": c.file_path,
         "external_bases": list(g.external_bases.get(c.qualified_name, [])), "attributes": sorted(c.attributes),
         "bases": parents.get(c.qualified_name, []),
+        "language": c.language,
     } for c in g.classes.values()]
-    files = [{"path": f.path, "module": f.module, "is_test": f.is_test, "namespace_json": json.dumps(f.namespace)}
+    files = [{"path": f.path, "module": f.module, "is_test": f.is_test, "namespace_json": json.dumps(f.namespace),
+              "language": f.language, "analysis_level": f.analysis_level}
              for f in g.files.values()]
     calls = [{"caller": e.caller, "callee": e.callee, "resolved_by": e.resolved_by, "line": min(e.lines)}
              for e in g.calls.values()]
@@ -262,3 +271,18 @@ def index_rows_from_graph(g: CodeGraph) -> dict[str, list[dict]]:
                          "login": g.author_logins.get(c.author_email)})
     return {"functions": functions, "classes": classes, "files": files, "calls": calls, "inherits": inherits,
             "modifies": modifies}
+
+
+def _language(path: str) -> str:
+    spec = detect_language(path)
+    return spec.name if spec else "unknown"
+
+
+def codegen_language(index: BuildIndex, meta: dict) -> str:
+    """Prefer stored symbols and source paths to optional imported task metadata."""
+    original = index.functions.get(meta.get("blank", ""))
+    if original is not None:
+        return original.language
+    if meta.get("file"):
+        return _language(meta["file"])
+    return meta.get("language") or "python"  # legacy Python-only tasks stored module/blank without a file
