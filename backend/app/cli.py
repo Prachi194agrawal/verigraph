@@ -38,6 +38,22 @@ console = Console()
 FAILED_CALL_RETRIES = 2  # extra passes over questions whose model call failed
 
 
+@app.command("pr-review")
+def pr_review(repo: Path = typer.Option(..., exists=True, file_okay=False),
+              base: str = typer.Option(...), head: str = typer.Option("HEAD"),
+              github_repo: str = typer.Option(None, help="owner/name for immutable source links"),
+              hops: int = typer.Option(3, min=1, max=6),
+              markdown: Path = typer.Option(Path("impact.md")),
+              json_output: Path = typer.Option(Path("impact.json"))) -> None:
+    """Review a Git diff offline; no database, provider key or target-code execution required."""
+    from app.analysis.pr_review import review
+
+    report = review(repo.resolve(), base, head, github_repo, hops)
+    markdown.write_text(report["markdown"], encoding="utf-8")
+    json_output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    console.print(f"PR review written to {markdown} and {json_output}")
+
+
 def _csv(value: str | None) -> list[str] | None:
     return [v.strip() for v in value.split(",") if v.strip()] if value else None
 

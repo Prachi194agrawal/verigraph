@@ -14,6 +14,11 @@ export function usePoll<T>(path: string | null, intervalMs = 3000, keepPolling?:
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
+    window.addEventListener("verigraph-access", refresh);
+    return () => window.removeEventListener("verigraph-access", refresh);
+  }, [refresh]);
+
+  useEffect(() => {
     if (!path) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;

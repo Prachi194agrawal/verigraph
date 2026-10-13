@@ -6,11 +6,12 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app import __version__
+from app.access import AccessMiddleware
 from app.api import builds, datasets, experiments, repos, results
 from app.config import get_settings
 from app.db import get_engine, init_db
@@ -23,6 +24,8 @@ for _noisy in ("pydriller", "httpx", "LiteLLM", "litellm", "neo4j"):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if get_settings().require_auth and not get_settings().api_users:
+        raise RuntimeError("REQUIRE_AUTH=true requires nonempty API_USERS")
     init_db()
     try:
         get_store().ensure_schema()
@@ -33,10 +36,18 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="VeriGraph for Code", version=__version__, lifespan=lifespan,
               description="Code knowledge graph + LLM evaluation for software projects.")
+app.add_middleware(AccessMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in get_settings().cors_origins.split(",")],
                    allow_methods=["*"], allow_headers=["*"])
 for module in (repos, builds, datasets, experiments, results):
     app.include_router(module.router)
+
+
+@app.get("/access", tags=["meta"])
+def access(request: Request) -> dict:
+    settings = get_settings()
+    return {"username": request.state.username, "authentication": bool(settings.api_users) or settings.require_auth,
+            "demo_read_only": settings.demo_read_only, "daily_write_limit": settings.api_daily_write_limit}
 
 
 @app.get("/capabilities", tags=["meta"])
@@ -69,10 +80,12 @@ def health() -> dict:
             conn.execute(text("SELECT 1"))
         status["database"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        status["database"] = f"error: {exc}"
+        logging.getLogger(__name__).warning("Database health check failed: %s", exc)
+        status["database"] = "error"
     try:
         get_store().verify()
         status["neo4j"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        status["neo4j"] = f"error: {exc}"
+        logging.getLogger(__name__).warning("Neo4j health check failed: %s", exc)
+        status["neo4j"] = "error"
     return status

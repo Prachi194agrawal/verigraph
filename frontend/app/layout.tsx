@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { AccessPanel } from "@/components/AccessPanel";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -20,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </a>
           </nav>
         </header>
-        <main>{children}</main>
+        <main><AccessPanel />{children}</main>
       </body>
     </html>
   );

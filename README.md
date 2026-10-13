@@ -48,6 +48,14 @@ Thorough mode trades time for more Python call inference. Build pages show the m
 there is no universal build-time guarantee. Hash embeddings are the lightweight default; opt into neural
 embeddings when measuring semantic retrieval.
 
+## Deployment and PR review
+
+For a shared server, use the [secure deployment guide](docs/deployment.md): HTTPS through Caddy,
+API authentication, optional read-only public samples, durable per-user write quotas, provider-call
+budgets, repository limits and backups. This is a shared installation, with no tenant isolation.
+The [PR review guide](docs/pr-review.md) covers the offline `verigraph pr-review` command and the GitHub
+workflow that posts source-linked impact comments for same-repository PRs and artifacts for forks.
+
 ## First setup: no API keys needed
 
 Requirements: Git, Docker with Compose v2.24+ and a running Docker daemon; Python 3.11+ for the demo
@@ -178,8 +186,8 @@ docker compose down
 starting. Inside Docker, a repository path must exist in the worker container; your host's home path
 is not automatically available. Prefer a Git URL, or bind-mount the folder read-only under `/repos` in
 both backend services. Local paths are accepted only inside `LOCAL_REPO_ROOTS` (Compose default:
-`/fixtures,/repos`), because the API has no authentication and serves files from build checkouts. Keep the
-API on localhost or behind an authenticating proxy.
+`/fixtures,/repos`), because the API serves files from build checkouts. Local development is unauthenticated
+by default; use the [production configuration](docs/deployment.md) before exposing it remotely.
 Generated-code execution is optional and requires a separately configured Docker-capable worker;
 the default Compose setup runs static symbol checks.
 

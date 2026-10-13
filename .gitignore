@@ -12,3 +12,6 @@ frontend/next-env.d.ts
 frontend/*.tsbuildinfo
 evals/results/
 *.csv
+backups/
+impact.md
+impact.json

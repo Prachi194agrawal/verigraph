@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Call edges resolved by these resolvers may become gold answers. Name-only edges never do.
@@ -30,6 +31,16 @@ class Settings(BaseSettings):
     job_backend: Literal["inline", "celery"] = "inline"
     redis_url: str = "redis://localhost:6379/0"
     cors_origins: str = "http://localhost:3000"
+
+    # HTTP Basic credentials for a shared team/demo installation. Never sent to the dashboard.
+    api_users: dict[str, SecretStr] = Field(default_factory=dict)
+    require_auth: bool = False  # fail closed at startup if no users are configured
+    demo_read_only: bool = False  # anonymous GET/HEAD only; expose public sample data only
+    api_daily_write_limit: int = Field(100, ge=1)
+    llm_daily_call_limit: int = Field(0, ge=0)  # 0 disables the deployment-wide provider-call cap
+    max_experiment_answers: int = Field(500, ge=1)
+    max_repo_files: int = Field(5000, ge=1)
+    max_repo_bytes: int = Field(100_000_000, ge=1)
 
     # Ingest
     # Comma-separated directories that local-path repositories must live under, e.g. "/fixtures,/repos". The API
@@ -71,6 +82,14 @@ class Settings(BaseSettings):
     # Test sandbox (stretch goal)
     sandbox_image_prefix: str = "verigraph-sandbox"
     sandbox_timeout_s: int = 600
+
+    @field_validator("api_users")
+    @classmethod
+    def valid_users(cls, users: dict[str, SecretStr]) -> dict[str, SecretStr]:
+        for username, password in users.items():
+            if not username or len(username) > 200 or ":" in username or not password.get_secret_value():
+                raise ValueError("API_USERS requires nonempty usernames (max 200 chars, no colon) and passwords")
+        return users
 
     @property
     def db_url(self) -> str:

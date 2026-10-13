@@ -128,6 +128,34 @@ def test_rate_limited_calls_wait_and_retry(tmp_path):
     assert client_module._retry_after_s(_RateLimited(wait="450ms")) == 0.45
 
 
+def test_daily_budget_counts_retries_but_excludes_cached_and_mock_calls(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+
+    from app.config import Settings
+    from app.models import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'budget.db'}")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.usage.get_engine", lambda: engine)
+    settings = Settings(_env_file=None, data_dir=tmp_path, llm_cache=True, llm_daily_call_limit=2)
+    first = LLMClient(settings, Tracer(tmp_path / "traces"))
+    first._sleep = lambda _: None
+    first._litellm = _fake_litellm([_RateLimited("1"), "ok"])
+    messages = [{"role": "user", "content": "first"}]
+    assert first.complete("groq/example", messages).text == "ok"
+    assert len(first._litellm.calls) == 2
+    assert all(call["num_retries"] == 0 for call in first._litellm.calls)
+    # A fresh client (as in another worker) shares the persistent quota and cache.
+    second = LLMClient(settings, Tracer(tmp_path / "traces"))
+    second._litellm = _fake_litellm(["must not call"])
+    assert second.complete("groq/example", messages).cached
+    second.complete("mock/empty", messages)
+    with pytest.raises(RuntimeError, match="Daily provider-call budget"):
+        second.complete("groq/example", [{"role": "user", "content": "different"}])
+    assert not second._litellm.calls
+    engine.dispose()
+
+
 def test_failed_calls_surface_the_provider_error(tmp_path):
     """LiteLLM retries a failed call through tenacity. Without it, every failure (rate limits included) became
     "tenacity import failed", hiding the provider's error and its 429 status from our own retries."""

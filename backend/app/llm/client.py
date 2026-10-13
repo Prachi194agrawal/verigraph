@@ -26,6 +26,7 @@ from app.config import Settings, get_settings
 from app.llm.cache import ResponseCache, cache_key
 from app.llm.mock import mock_complete
 from app.llm.tracing import Tracer, get_tracer
+from app.usage import consume
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +95,8 @@ class LLMClient:
                       json_mode: bool, trace_id: str | None, name: str) -> LLMResponse:
         litellm = self._lib()
         kwargs: dict = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens,
-                        "timeout": self.settings.llm_timeout_s, "num_retries": self.settings.llm_num_retries}
+                        "timeout": self.settings.llm_timeout_s,
+                        "num_retries": 0 if self.settings.llm_daily_call_limit else self.settings.llm_num_retries}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if model.startswith(("ollama/", "ollama_chat/")) and self.settings.ollama_api_base:
@@ -120,6 +122,8 @@ class LLMClient:
         succeeded, so time spent waiting for a rate limit is not reported as model latency."""
         attempt = 0
         while True:
+            if self.settings.llm_daily_call_limit and not consume("llm:deployment", self.settings.llm_daily_call_limit):
+                raise RuntimeError("Daily provider-call budget reached; resets at midnight UTC")
             started = time.perf_counter()
             try:
                 return litellm.completion(**kwargs), (time.perf_counter() - started) * 1000

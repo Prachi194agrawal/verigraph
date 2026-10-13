@@ -27,6 +27,15 @@ class Base(DeclarativeBase):
     pass
 
 
+class UsageCounter(Base):
+    """Atomic daily counters shared by API processes and workers; days use UTC."""
+    __tablename__ = "usage_counters"
+
+    principal: Mapped[str] = mapped_column(String(250), primary_key=True)
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class Repo(Base):
     __tablename__ = "repos"
 

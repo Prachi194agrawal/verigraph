@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import get_db
 from app.eval.report import answer_rows, summarize
 from app.models import Answer, Dataset, Experiment, GraphBuild
@@ -33,6 +34,9 @@ def create_experiments(body: ExperimentCreate, background: BackgroundTasks,
         build = db.get(GraphBuild, ds.build_id)
         if not build or not (build.stats or {}).get("embeddings", {}).get("embedding_model"):
             raise HTTPException(409, "vector pipeline requires a build with code embeddings enabled")
+    requested_answers = min(ds.n_questions, body.limit or ds.n_questions) * len(body.models) * len(body.pipelines)
+    if requested_answers > get_settings().max_experiment_answers:
+        raise HTTPException(422, "Experiment exceeds MAX_EXPERIMENT_ANSWERS; reduce models, pipelines or limit")
     group = uuid.uuid4().hex[:12]
     options = {**body.options, "limit": body.limit, "families": body.families, "concurrency": body.concurrency,
                "run_tests": body.run_tests}

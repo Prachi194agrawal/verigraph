@@ -30,6 +30,7 @@ from app.graph.store import get_store
 from app.ingest.clone import checkout_repo
 from app.ingest.github import enrich_from_github
 from app.ingest.history import mine_history
+from app.ingest.limits import check_checkout_limits
 from app.llm.client import get_llm
 from app.models import (
     Answer,
@@ -99,6 +100,7 @@ def run_build(build_id: int) -> None:
         with session_scope() as db:
             row = db.get(GraphBuild, build_id)
             row.commit_sha, row.checkout_path = checkout.commit_sha, str(checkout.path)
+        check_checkout_limits(checkout.path, settings)
         say("step 2: parsing and resolving calls")
         mode = opts.get("analysis_mode", "fast")
         resolvers = opts.get("resolvers") or (["import", "name"] if mode == "fast" else settings.resolver_order)

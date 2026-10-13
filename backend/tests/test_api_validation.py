@@ -67,6 +67,20 @@ def test_vector_requires_embeddings(db):
     assert not db.execute(select(Experiment)).first()
 
 
+def test_oversized_experiment_is_rejected_before_dispatch(db, monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setattr("app.api.experiments.get_settings", lambda: Settings(_env_file=None, max_experiment_answers=10))
+    db.add(GraphBuild(id=1, repo_id=1, repo="mini", parser_version="test", stats={}))
+    db.add(Dataset(id=1, build_id=1, version="test", status="done", n_questions=20))
+    db.flush()
+    with pytest.raises(HTTPException) as exc:
+        create_experiments(ExperimentCreate(dataset_id=1, models=["mock/empty"], pipelines=["none"]),
+                           BackgroundTasks(), db)
+    assert exc.value.status_code == 422
+    assert not db.execute(select(Experiment)).first()
+
+
 @pytest.mark.parametrize("status", ["queued", "running", "done"])
 def test_resume_does_not_duplicate_active_or_completed_jobs(db, status):
     db.add(Experiment(id=1, dataset_id=1, model="mock/empty", pipeline="none", prompt_version="v1", status=status))

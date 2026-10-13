@@ -1,10 +1,17 @@
 // Thin client for the FastAPI backend. NEXT_PUBLIC_API_URL is baked in at build time.
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+let authorization: string | null = null;
+
+export function setCredentials(username: string | null, password = "") {
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  authorization = username === null ? null : `Basic ${btoa(Array.from(bytes, b => String.fromCharCode(b)).join(""))}`;
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...(authorization ? { Authorization: authorization } : {}), ...(init?.headers ?? {}) },
     cache: "no-store",
   });
   if (!res.ok) {

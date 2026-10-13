@@ -40,7 +40,8 @@ class ImpactReport:
         """A summary in GitHub-flavoured Markdown, e.g. for a pull-request comment."""
         out = [f"### {title}", ""]
         if not self.changed:
-            out.append("No function of this build is changed.")
+            out.append("No function of this build is changed. New files, module-level changes and unresolved paths "
+                       "may still have an impact; this is not a clean bill of health.")
         else:
             out.append(f"**Changed functions ({len(self.changed)}):** "
                        + ", ".join(f"`{c['qualified_name']}`" for c in self.changed[:MAX_LISTED]))
@@ -64,6 +65,8 @@ class ImpactReport:
         if unresolved_call_rate:
             out += ["", f"_{unresolved_call_rate:.1%} of this build's calls into repository code are unresolved "
                         "(dynamic dispatch, callbacks), so the real impact can be larger._"]
+        out += ["", "_Static impact analysis does not verify runtime behavior. Dynamic dispatch, callbacks, "
+                     "cross-language calls and newly added functions may be unverifiable._"]
         return "\n".join(out) + "\n"
 
 
@@ -77,8 +80,7 @@ def changed_from_diff(index: BuildIndex, diff: str) -> tuple[set[str], list[str]
     unmatched: list[str] = []
     for path, lines in sorted(patch_lines(diff).items()):
         if path not in index.files:
-            if path.endswith(".py"):
-                unmatched.append(f"{path} (not in this build)")
+            unmatched.append(f"{path} (not in this build)")
             continue
         hit = {fn.qualified_name for fn in by_file.get(path, []) for n in lines if fn.start_line <= n <= fn.end_line}
         if hit:
@@ -121,7 +123,8 @@ def analyze_impact(index: BuildIndex, diff: str | None = None, functions: list[s
 
     def info(qn: str, hops: int | None = None) -> dict:
         fn = index.functions[qn]
-        row = {"qualified_name": qn, "file_path": fn.file_path}
+        row = {"qualified_name": qn, "file_path": fn.file_path,
+               "start_line": fn.start_line, "end_line": fn.end_line}
         return row if hops is None else {**row, "hops": hops}
 
     report.changed = [info(qn) for qn in sorted(changed)]

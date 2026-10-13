@@ -1,0 +1,63 @@
+# docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+# Requires Compose >=2.24.4 for !reset. Only Caddy publishes public HTTP(S) ports.
+services:
+  neo4j:
+    ports: !reset []
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD}
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    restart: unless-stopped
+    mem_limit: 3g
+  postgres:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a URL-safe POSTGRES_PASSWORD}
+    restart: unless-stopped
+    mem_limit: 1g
+  redis:
+    restart: unless-stopped
+    mem_limit: 256m
+  api:
+    ports: !reset []
+    environment:
+      REQUIRE_AUTH: "true"
+      API_USERS: ${API_USERS:?Set API_USERS to a nonempty JSON username/password object}
+      DEMO_READ_ONLY: ${DEMO_READ_ONLY:-false}
+      CORS_ORIGINS: https://${DOMAIN:?Set DOMAIN to your DNS hostname}
+      LLM_DAILY_CALL_LIMIT: ${LLM_DAILY_CALL_LIMIT:-100}
+      MAX_EXPERIMENT_ANSWERS: ${MAX_EXPERIMENT_ANSWERS:-100}
+    mem_limit: 1g
+  worker:
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --concurrency=1
+    environment:
+      REQUIRE_AUTH: "true"
+      API_USERS: ${API_USERS:?Set API_USERS}
+      LLM_DAILY_CALL_LIMIT: ${LLM_DAILY_CALL_LIMIT:-100}
+    mem_limit: 3g
+  web:
+    ports: !reset []
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: /backend
+    mem_limit: 1g
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+    mem_limit: 256m
+
+volumes:
+  caddy_data:
+  caddy_config:

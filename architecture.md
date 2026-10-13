@@ -46,10 +46,11 @@ The build argument applies to both API and worker. Neural embedding models need 
 and model downloads. Hash and CodeRankEmbed both use 768 dimensions by default, but their vectors
 represent different spaces, so interpret comparisons accordingly.
 
-**Local paths are confined.** The API has no authentication and serves files from build checkouts, so a
+**Local paths are confined.** The API serves files from build checkouts, so a
 local-path repository must live under `LOCAL_REPO_ROOTS` (Compose default: `/fixtures,/repos`). Git URLs
 are always accepted. An empty `LOCAL_REPO_ROOTS` allows any local path and is meant only for single-user
-local development. Do not expose the API on a public network without putting authentication in front of it.
+local development. Local API authentication is opt-in; the [production override](docs/deployment.md)
+requires configured HTTP Basic users, serves HTTPS through Caddy, and removes backend/database host ports.
 
 ### Job validation and recovery
 
@@ -1188,15 +1189,18 @@ In priority order: what turns the platform into findings first, then what extend
 3. **SCIP in the Docker image.** Install `scip-python` (Node) in the backend image so the most precise
    resolver runs by default. Today Jedi resolves almost everything, and an edge audit per resolver would
    show whether SCIP adds precision.
-4. **Authentication.** An API key or an OAuth proxy before the API is reachable by anyone else, plus a cost
-   budget per experiment, so a run cannot exceed a set spend.
+4. **Authentication and budgets (initial version implemented).** Shared-installation HTTP Basic users,
+   optional anonymous read-only samples, durable daily per-user write quotas, a deployment-wide provider
+   attempt cap, and experiment/repository limits are implemented. OAuth, tenant isolation and dollar/token
+   budgets remain future work. See [deployment](docs/deployment.md).
 5. **Summary-vector and hybrid retrieval.** `summary_embedding` and its index are built but no pipeline reads
    them. A hybrid pipeline (code and summary vectors, then a graph expansion) is a natural fifth leaderboard
    row.
 6. **An E3 view.** The same families on two datasets (a famous repo and your own) side by side, with the F1
    gap and the invented-item rate per pipeline.
-7. **The PR impact comment as a GitHub Action**, using the recipe in [4b](#4b-using-the-graph-directly-ask-and-change-impact),
-   and caching the base-commit build between runs.
+7. **The PR impact comment as a GitHub Action (implemented)**: the offline `pr-review` command analyzes
+   the merge base, emits source-linked Markdown/JSON, and the workflow updates a comment on same-repo PRs
+   or provides an artifact for forks. Base-commit graph caching remains future work. See [PR review](docs/pr-review.md).
 8. **Releases and incremental builds.** Reuse per-file parse results between commits, then compare answers
    across two releases of the same repository (a stretch goal of the plan).
 9. **More languages** through `scip-typescript` / `scip-go` and a Tree-sitter front end that emits the same
